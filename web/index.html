@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>明日方舟更新器</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+        <path d="M16 2 30 16 16 30 2 16Z" fill="none" stroke="currentColor" stroke-width="2"/>
+        <path d="M16 8 24 16 16 24 8 16Z" fill="currentColor"/>
+      </svg>
+      <div>
+        <h1>明日方舟更新器</h1>
+        <p>官服安装包 · 只比对 clientVersion · 资源热更由游戏自己下载</p>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button type="button" class="tab active" data-tab="devices" role="tab" aria-selected="true">设备</button>
+      <button type="button" class="tab" data-tab="settings" role="tab" aria-selected="false">设置</button>
+    </nav>
+  </header>
+
+  <main>
+    <section class="cards" aria-label="概览">
+      <article class="card">
+        <h2>官方版本</h2>
+        <p class="metric" id="client-version">检查中</p>
+        <p class="sub" id="res-version">resVersion —</p>
+        <p class="sub" id="checked-at">尚未检查</p>
+        <p class="warn" id="version-error" hidden></p>
+      </article>
+      <article class="card">
+        <h2>APK 缓存</h2>
+        <p class="metric" id="apk-phase">空闲</p>
+        <div class="track" aria-hidden="true"><div class="bar" id="apk-bar"></div></div>
+        <p class="sub" id="apk-detail">尚未下载</p>
+      </article>
+      <article class="card">
+        <h2>adb</h2>
+        <p class="metric" id="adb-source">未检测</p>
+        <p class="sub" id="adb-path">—</p>
+        <p class="sub" id="adb-version">—</p>
+        <p class="warn" id="adb-error" hidden></p>
+      </article>
+    </section>
+
+    <section id="view-devices">
+      <div class="toolbar">
+        <button type="button" id="btn-check">检查更新</button>
+        <button type="button" id="btn-refresh">扫描设备</button>
+        <button type="button" class="primary" id="btn-update-all">全部更新</button>
+        <button type="button" class="ghost" id="btn-cancel">取消全部</button>
+        <label class="check"><input type="checkbox" id="force-update"> 强制重装</label>
+        <form id="quick-add" class="quick-add">
+          <input id="quick-endpoint" type="text" placeholder="127.0.0.1:16384" autocomplete="off" spellcheck="false">
+          <button type="submit">添加设备</button>
+        </form>
+      </div>
+      <p class="hint">全部更新会处理在线设备，并拉起设置里尚未启动的模拟器。APK 只下载一次，安装按并发数同时进行。</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>序列号</th>
+              <th>型号</th>
+              <th>Android</th>
+              <th>ABI</th>
+              <th>已装版本</th>
+              <th>状态</th>
+              <th>进度</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="device-body"></tbody>
+        </table>
+      </div>
+      <p class="empty" id="device-empty">还没有设备。扫描 adb，或在右侧添加 host:port。纯 x86 模拟器会在下载前被拦住。</p>
+    </section>
+
+    <section id="view-settings" hidden>
+      <form id="settings-form" class="settings">
+        <div class="grid">
+          <label>监听地址
+            <input name="listen" autocomplete="off" spellcheck="false">
+          </label>
+          <label>并发安装数
+            <input name="concurrency" type="number" min="1" max="16">
+          </label>
+          <label>版本缓存（秒）
+            <input name="version_cache_ttl_secs" type="number" min="1">
+          </label>
+          <label>等待模拟器上线（秒）
+            <input name="device_wait_timeout_secs" type="number" min="1">
+          </label>
+          <label>安装超时（秒）
+            <input name="install_timeout_secs" type="number" min="60">
+          </label>
+          <label>自动检查间隔
+            <input name="auto_check_interval" placeholder="留空关闭，例如 6h" autocomplete="off">
+          </label>
+          <label class="wide">adb 路径
+            <span class="row">
+              <input name="adb_path" placeholder="留空则自动发现" autocomplete="off" spellcheck="false">
+              <button type="button" id="btn-probe">检测</button>
+            </span>
+          </label>
+          <label class="wide">APK 缓存目录
+            <input name="apk_cache_dir" placeholder="留空则使用系统数据目录" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="wide">APK 直链覆盖
+            <input name="apk_url_override" placeholder="留空则走官方入口" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="wide">手动设备，每行一个
+            <textarea name="extra_devices" rows="3" spellcheck="false"></textarea>
+          </label>
+          <label class="check"><input name="auto_launch_game" type="checkbox"> 安装完成后启动游戏</label>
+          <label class="check"><input name="auto_update_on_check" type="checkbox"> 定时检查到新 clientVersion 后自动更新</label>
+        </div>
+        <p class="sub" id="settings-note"></p>
+        <div class="toolbar">
+          <button type="submit" class="primary">保存设置</button>
+          <button type="button" id="btn-reload-config" class="ghost">重新读取</button>
+        </div>
+      </form>
+
+      <div class="emu-head">
+        <h2>模拟器</h2>
+        <button type="button" id="btn-add-emu">添加模拟器</button>
+      </div>
+      <div id="emulator-list"></div>
+    </section>
+
+    <section class="logs" aria-label="日志">
+      <div class="emu-head">
+        <h2>日志</h2>
+        <input id="log-filter" type="search" placeholder="按设备或关键字过滤" autocomplete="off">
+      </div>
+      <pre id="log-view"></pre>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
