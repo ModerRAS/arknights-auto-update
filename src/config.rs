@@ -79,8 +79,8 @@ impl Default for AppConfig {
             device_wait_timeout_secs: 180,
             install_timeout_secs: 1800,
             auto_launch_game: false,
-            auto_check_interval: String::new(),
-            auto_update_on_check: false,
+            auto_check_interval: "6h".into(),
+            auto_update_on_check: true,
             apk_url_override: None,
             extra_devices: Vec::new(),
             emulators: Vec::new(),
@@ -261,6 +261,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn defaults_to_unattended() {
+        let config = AppConfig::default();
+        assert_eq!(config.auto_check_interval, "6h");
+        assert!(config.auto_update_on_check);
+    }
+
+    #[test]
     fn parses_intervals() {
         assert_eq!(parse_interval("").unwrap(), None);
         assert_eq!(parse_interval("off").unwrap(), None);
@@ -309,6 +316,7 @@ mod tests {
         let mut loaded: AppConfig = toml::from_str(&text).expect("parse");
         loaded.normalize();
         assert_eq!(loaded.auto_check_interval, "6h");
+        assert!(loaded.auto_update_on_check);
         assert_eq!(loaded.concurrency, 2);
         assert_eq!(loaded.emulators.len(), 1);
         assert_eq!(loaded.emulators[0].start_args[0], "control");

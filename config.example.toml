@@ -26,11 +26,12 @@ install_timeout_secs = 1800
 # 安装成功后是否启动游戏。启动失败不会把整次更新判成失败。
 auto_launch_game = false
 
-# 定时检查。空字符串或 off 表示关闭。示例：6h、30m、1d。
-auto_check_interval = ""
+# 无人值守。程序启动后约 8 秒会自己检查并安装，之后按这个间隔重复。
+# 空字符串或 off 才关闭。已经装到当前 clientVersion 的模拟器不会被反复拉起。
+auto_check_interval = "6h"
 
-# 定时检查发现新的 clientVersion 后，是否按「全部更新」自动安装。
-auto_update_on_check = false
+# 为 true 时，发现更高的 clientVersion（或还不知道设备版本）就自动拉起并安装。
+auto_update_on_check = true
 
 # 可选。非空时跳过官方入口解析，直接下载这个 APK 直链（自建镜像或测试）。
 apk_url_override = ""

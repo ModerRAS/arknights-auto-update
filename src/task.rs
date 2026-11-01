@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -10,7 +11,7 @@ use crate::adb::{
     parse_df_available_bytes, parse_package_inventory, parse_props, probe_adb, props_script,
     storage_script, AdbInfo, COMMON_ADB_PORTS,
 };
-use crate::config::{save, AppConfig};
+use crate::config::{save, AppConfig, EmulatorConfig};
 use crate::download::{find_cached_apk, obtain_apk, resolve_apk_url, REQUIRED_FREE_BYTES};
 use crate::emulator::{emulator_adb_override, expected_serial, launch_emulator, wait_until_online};
 use crate::error::UpdateError;
@@ -154,43 +155,226 @@ pub async fn watch_config(state: SharedState) {
     }
 }
 
+const AUTO_STARTUP_GRACE: Duration = Duration::from_secs(8);
+
 pub async fn auto_check_loop(state: SharedState) {
-    let mut last = Instant::now();
+    let mut armed: Option<Duration> = None;
+    let mut next_run: Option<Instant> = None;
+    let mut message = "正在安排自动更新".to_string();
     loop {
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         let config = state.config.read().await.clone();
         let interval = match crate::config::parse_interval(&config.auto_check_interval) {
             Ok(interval) => interval,
             Err(err) => {
                 tracing::warn!(error = %err, "自动检查间隔无效");
-                last = Instant::now();
+                message = format!("自动检查间隔无效：{err}");
+                publish_auto(&state, &config, None, message.clone()).await;
+                armed = None;
+                next_run = None;
                 continue;
             }
         };
         let Some(interval) = interval else {
-            last = Instant::now();
+            armed = None;
+            next_run = None;
+            message = "自动更新已关闭。把间隔设为 6h 并勾选自动安装后，程序会自己完成更新。".into();
+            publish_auto(&state, &config, None, message.clone()).await;
             continue;
         };
-        if last.elapsed() < interval {
+        if armed != Some(interval) {
+            let first = armed.is_none();
+            armed = Some(interval);
+            next_run = Some(Instant::now() + if first { AUTO_STARTUP_GRACE } else { interval });
+            if first {
+                message = "无人值守已开启。启动后会自己检查并安装，不用点按钮。".into();
+            }
+        }
+        let due = next_run.unwrap_or_else(Instant::now);
+        publish_auto(&state, &config, Some(due), message.clone()).await;
+        if Instant::now() < due {
             continue;
         }
-        last = Instant::now();
-        tracing::info!("定时检查官方版本");
-        match check_official(&state, true).await {
-            Ok(version) => {
-                tracing::info!(client = %version.client_version, res = %version.res_version, "定时检查完成");
-                if config.auto_update_on_check {
-                    let request = UpdateRequest {
-                        devices: DeviceSelector::All,
-                        force: false,
-                    };
-                    if let Err(err) = start_update(&state, request).await {
-                        tracing::warn!(error = %err, "定时自动更新未启动");
-                    }
+        if update_busy(&state).await {
+            next_run = Some(Instant::now() + Duration::from_secs(60));
+            message = "已有更新在进行，一分钟后再自动检查。".into();
+            continue;
+        }
+        next_run = Some(Instant::now() + interval);
+        message = run_auto_cycle(&state).await;
+    }
+}
+
+async fn publish_auto(
+    state: &AppState,
+    config: &AppConfig,
+    next_run: Option<Instant>,
+    message: String,
+) {
+    let enabled = crate::config::parse_interval(&config.auto_check_interval)
+        .ok()
+        .flatten()
+        .is_some();
+    *state.auto.write().await = crate::state::AutoStatus {
+        enabled,
+        install: config.auto_update_on_check,
+        interval: config.auto_check_interval.clone(),
+        next_run_ms: next_run.map(instant_to_unix_ms),
+        message,
+    };
+}
+
+fn instant_to_unix_ms(at: Instant) -> u64 {
+    let now = Instant::now();
+    let now_ms = crate::util::now_ms();
+    let delta = if at >= now {
+        u64::try_from((at - now).as_millis()).unwrap_or(u64::MAX)
+    } else {
+        u64::try_from((now - at).as_millis()).unwrap_or(0)
+    };
+    if at >= now {
+        now_ms.saturating_add(delta)
+    } else {
+        now_ms.saturating_sub(delta)
+    }
+}
+
+async fn update_busy(state: &AppState) -> bool {
+    let devices_busy = state
+        .devices
+        .read()
+        .await
+        .iter()
+        .any(|device| device.task.phase.is_active());
+    if devices_busy {
+        return true;
+    }
+    matches!(
+        state.download.read().await.phase,
+        DownloadPhase::Resolving | DownloadPhase::Downloading | DownloadPhase::Verifying
+    )
+}
+
+async fn run_auto_cycle(state: &SharedState) -> String {
+    let config = state.config.read().await.clone();
+    let version = match check_official(state, true).await {
+        Ok(version) => version,
+        Err(err) => {
+            tracing::warn!(error = %err, "自动检查失败");
+            return format!("自动检查失败：{err}");
+        }
+    };
+    tracing::info!(client = %version.client_version, res = %version.res_version, "自动检查完成");
+    if !config.auto_update_on_check {
+        return format!(
+            "已看到官方 {}。自动安装是关的，所以不会自己装。",
+            version.client_version
+        );
+    }
+    if let Err(err) = refresh_devices(state).await {
+        tracing::warn!(error = %err, "自动更新前扫描设备失败");
+    }
+    let known = state.known_versions.lock().await.clone();
+    let devices = state.devices.read().await.clone();
+    match plan_unattended(
+        &version.client_version,
+        &devices,
+        &config.emulators,
+        &config.extra_devices,
+        &known,
+    ) {
+        UnattendedPlan::Skip(message) => {
+            tracing::info!(%message, "本轮不拉起模拟器");
+            message
+        }
+        UnattendedPlan::Update(serials) => {
+            let count = serials.len();
+            let request = UpdateRequest {
+                devices: DeviceSelector::Only(serials),
+                force: false,
+            };
+            match start_update(state, request).await {
+                Ok(()) => {
+                    tracing::info!(count, "已开始无人值守更新");
+                    format!(
+                        "已开始更新 {count} 台设备，官方版本 {}",
+                        version.client_version
+                    )
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "无人值守更新未启动");
+                    format!("没能开始自动更新：{err}")
                 }
             }
-            Err(err) => tracing::warn!(error = %err, "定时检查失败"),
         }
+    }
+}
+
+pub enum UnattendedPlan {
+    Skip(String),
+    Update(Vec<String>),
+}
+
+/// 在线设备用刚读到的版本；离线模拟器用上次成功记录的版本。
+/// 已经不落后于官方 clientVersion 的模拟器不会被拉起。
+pub fn plan_unattended(
+    official: &str,
+    devices: &[DeviceSnapshot],
+    emulators: &[EmulatorConfig],
+    extra_devices: &[String],
+    known: &HashMap<String, String>,
+) -> UnattendedPlan {
+    let mut serials = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for device in devices.iter().filter(|device| device.online) {
+        if installed_is_current(official, device.installed_version.as_deref()) {
+            continue;
+        }
+        if seen.insert(device.serial.clone()) {
+            serials.push(device.serial.clone());
+        }
+    }
+    let mut offline_emulator = false;
+    for emulator in emulators {
+        let Some(serial) = expected_serial(emulator) else {
+            continue;
+        };
+        if devices
+            .iter()
+            .any(|device| device.online && device.serial == serial)
+        {
+            continue;
+        }
+        offline_emulator = true;
+        let recorded = known.get(&serial).map(String::as_str);
+        if installed_is_current(official, recorded) {
+            continue;
+        }
+        if seen.insert(serial.clone()) {
+            serials.push(serial);
+        }
+    }
+    if !serials.is_empty() {
+        return UnattendedPlan::Update(serials);
+    }
+    let has_online = devices.iter().any(|device| device.online);
+    if !offline_emulator && !has_online {
+        if extra_devices.is_empty() {
+            return UnattendedPlan::Skip(
+                "还没有模拟器或在线设备。在设置里添加一次模拟器后，程序会自己拉起并安装。".into(),
+            );
+        }
+        return UnattendedPlan::Skip("手动添加的设备不在线，而且没有可拉起的模拟器。".into());
+    }
+    UnattendedPlan::Skip(format!(
+        "已是最新的 clientVersion {official}，本轮不拉起模拟器。"
+    ))
+}
+
+fn installed_is_current(official: &str, installed: Option<&str>) -> bool {
+    match installed {
+        Some(version) => !version_is_newer(official, version),
+        None => false,
     }
 }
 
@@ -857,6 +1041,7 @@ async fn update_one(
                 }
             }
             let label = version_now.unwrap_or_else(|| official.client_version.clone());
+            state.note_installed(&serial, &label).await;
             let mut done = TaskView::phase(
                 TaskPhase::Succeeded,
                 format!("已安装 {label}（{}）", method.label()),
@@ -884,20 +1069,26 @@ fn enrich_signature(err: UpdateError, bilibili_installed: bool) -> UpdateError {
 }
 
 async fn remember_query(state: &AppState, serial: &str, adb: &AdbInfo, queried: &QueriedDevice) {
-    let mut devices = state.devices.write().await;
-    let task = devices
-        .iter()
-        .find(|item| item.serial == serial)
-        .map(|item| item.task.clone())
-        .unwrap_or_else(TaskView::idle);
-    let mut row = snapshot_from_query(serial, adb, queried);
-    row.task = task;
-    if let Some(existing) = devices.iter_mut().find(|item| item.serial == serial) {
-        row.emulator_id = existing.emulator_id.clone();
-        row.emulator_name = existing.emulator_name.clone();
-        *existing = row;
-    } else {
-        devices.push(row);
+    let installed = queried.installed.clone();
+    {
+        let mut devices = state.devices.write().await;
+        let task = devices
+            .iter()
+            .find(|item| item.serial == serial)
+            .map(|item| item.task.clone())
+            .unwrap_or_else(TaskView::idle);
+        let mut row = snapshot_from_query(serial, adb, queried);
+        row.task = task;
+        if let Some(existing) = devices.iter_mut().find(|item| item.serial == serial) {
+            row.emulator_id = existing.emulator_id.clone();
+            row.emulator_name = existing.emulator_name.clone();
+            *existing = row;
+        } else {
+            devices.push(row);
+        }
+    }
+    if let Some(version) = installed {
+        state.note_installed(serial, &version).await;
     }
 }
 
@@ -1027,6 +1218,59 @@ mod tests {
     use super::*;
     use crate::error::FailureKind;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    #[test]
+    fn unattended_plan_skips_current_emulator_and_updates_unknown() {
+        let current = emulator("127.0.0.1:16384");
+        let unknown = emulator("127.0.0.1:16416");
+        let mut known = HashMap::new();
+        known.insert("127.0.0.1:16384".into(), "2.7.91".into());
+        match plan_unattended("2.7.91", &[], &[current, unknown], &[], &known) {
+            UnattendedPlan::Update(serials) => {
+                assert_eq!(serials, vec!["127.0.0.1:16416".to_string()]);
+            }
+            UnattendedPlan::Skip(message) => panic!("不应跳过：{message}"),
+        }
+    }
+
+    #[test]
+    fn unattended_plan_uses_live_version_for_online_devices() {
+        let mut behind = DeviceSnapshot::placeholder("127.0.0.1:5555", TaskView::idle());
+        behind.online = true;
+        behind.installed_version = Some("2.7.80".into());
+        let mut current = DeviceSnapshot::placeholder("127.0.0.1:5557", TaskView::idle());
+        current.online = true;
+        current.installed_version = Some("2.7.91".into());
+        match plan_unattended("2.7.91", &[behind, current], &[], &[], &HashMap::new()) {
+            UnattendedPlan::Update(serials) => {
+                assert_eq!(serials, vec!["127.0.0.1:5555".to_string()]);
+            }
+            UnattendedPlan::Skip(message) => panic!("不应跳过：{message}"),
+        }
+    }
+
+    #[test]
+    fn unattended_plan_without_targets_asks_for_an_emulator() {
+        match plan_unattended("2.7.91", &[], &[], &[], &HashMap::new()) {
+            UnattendedPlan::Skip(message) => assert!(message.contains("添加一次模拟器")),
+            UnattendedPlan::Update(_) => panic!("没有目标时不应更新"),
+        }
+    }
+
+    fn emulator(serial: &str) -> EmulatorConfig {
+        EmulatorConfig {
+            id: serial.into(),
+            name: serial.into(),
+            kind: crate::config::EmulatorKind::Custom,
+            start_program: Some("emulator.exe".into()),
+            start_args: vec!["launch".into()],
+            vmindex: 0,
+            expected_serial: Some(serial.into()),
+            adb_port: None,
+            adb_path: None,
+            install_dir: None,
+        }
+    }
 
     #[test]
     fn offline_manual_device_stays_visible() {

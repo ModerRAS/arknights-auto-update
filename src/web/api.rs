@@ -36,6 +36,7 @@ pub async fn state(State(state): State<SharedState>) -> Json<Value> {
         "adb": state.adb.read().await.clone(),
         "device_count": devices.len(),
         "active_tasks": active,
+        "auto": state.auto.read().await.clone(),
     }))
 }
 

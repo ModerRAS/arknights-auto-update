@@ -79,6 +79,10 @@ async function refreshOverview() {
   if (data.restart_required) {
     toast("监听地址已改，需要重启程序后才会生效。");
   }
+  const auto = data.auto || {};
+  const next = auto.next_run_ms ? `下次 ${formatTime(auto.next_run_ms)}` : "";
+  const parts = [auto.message, next].filter(Boolean);
+  $("auto-status").textContent = parts.join(" · ") || "自动更新状态未知";
 }
 
 function statusPill(device) {

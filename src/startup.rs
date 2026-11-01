@@ -6,7 +6,7 @@ use anyhow::Context;
 use clap::Parser;
 use tokio::sync::broadcast;
 
-use crate::config::{ensure_loopback, resolve_config_path, save, AppConfig};
+use crate::config::{ensure_loopback, parse_interval, resolve_config_path, save, AppConfig};
 use crate::logsetup;
 use crate::platform::{default_data_dir, open_browser};
 use crate::state::{AppPaths, AppState, LogLine, LOG_CAPACITY};
@@ -62,6 +62,8 @@ pub async fn run() -> anyhow::Result<()> {
         data_dir,
         log_dir,
     };
+    let auto_interval = config.auto_check_interval.clone();
+    let auto_install = config.auto_update_on_check;
     let state = AppState::new(
         config,
         paths,
@@ -81,6 +83,25 @@ pub async fn run() -> anyhow::Result<()> {
     tracing::info!(%local, config = %config_path.display(), "WebUI 已启动");
     println!("明日方舟更新器已启动：http://{local}");
     println!("配置文件：{}", config_path.display());
+    match parse_interval(&auto_interval) {
+        Ok(Some(_)) if auto_install => {
+            println!(
+                "无人值守已开启：启动后约 8 秒自动检查并安装，之后每 {} 重复。已是最新的模拟器不会被反复拉起。",
+                auto_interval
+            );
+        }
+        Ok(Some(_)) => {
+            println!(
+                "会按 {} 自动检查版本，但不会自己安装。把 auto_update_on_check 设为 true 后才会无人值守安装。",
+                auto_interval
+            );
+        }
+        _ => {
+            println!(
+                "无人值守未开启。要自动更新，把 auto_check_interval 设为 6h，并把 auto_update_on_check 设为 true。"
+            );
+        }
+    }
 
     if cli.open {
         open_browser(&format!("http://{local}"));

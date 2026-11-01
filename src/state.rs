@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
@@ -243,6 +243,27 @@ pub struct CachedVersion {
     pub fetched_at: Instant,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct AutoStatus {
+    pub enabled: bool,
+    pub install: bool,
+    pub interval: String,
+    pub next_run_ms: Option<u64>,
+    pub message: String,
+}
+
+impl Default for AutoStatus {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            install: false,
+            interval: String::new(),
+            next_run_ms: None,
+            message: "正在安排自动更新".into(),
+        }
+    }
+}
+
 pub struct AppState {
     pub paths: AppPaths,
     pub bound_listen: String,
@@ -262,6 +283,8 @@ pub struct AppState {
     pub update_cancel: Mutex<Option<tokio_util::sync::CancellationToken>>,
     pub concurrency: RwLock<Arc<Semaphore>>,
     pub save_lock: Mutex<()>,
+    pub known_versions: Mutex<HashMap<String, String>>,
+    pub auto: RwLock<AutoStatus>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -277,6 +300,7 @@ impl AppState {
         download_client: reqwest::Client,
     ) -> Arc<Self> {
         let permits = config.concurrency.clamp(1, 16);
+        let known_path = paths.data_dir.join("known-versions.json");
         Arc::new(Self {
             paths,
             bound_listen,
@@ -296,7 +320,26 @@ impl AppState {
             device_locks: DashMap::new(),
             update_cancel: Mutex::new(None),
             save_lock: Mutex::new(()),
+            known_versions: Mutex::new(load_known_versions(&known_path)),
+            auto: RwLock::new(AutoStatus::default()),
         })
+    }
+
+    pub async fn note_installed(&self, serial: &str, version: &str) {
+        let mut known = self.known_versions.lock().await;
+        if known.get(serial).map(String::as_str) == Some(version) {
+            return;
+        }
+        known.insert(serial.to_string(), version.to_string());
+        let path = self.paths.data_dir.join("known-versions.json");
+        match serde_json::to_string_pretty(&*known) {
+            Ok(text) => {
+                if let Err(err) = std::fs::write(&path, text) {
+                    tracing::warn!(path = %path.display(), error = %err, "写入已知版本失败");
+                }
+            }
+            Err(err) => tracing::warn!(error = %err, "序列化已知版本失败"),
+        }
     }
 
     pub fn emit(&self, event: BusEvent) {
@@ -374,6 +417,23 @@ pub fn merge_device_rows(
         }
     }
     scanned
+}
+
+fn load_known_versions(path: &Path) -> HashMap<String, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(map) => map,
+            Err(err) => {
+                tracing::warn!(path = %path.display(), error = %err, "已知版本文件无法解析，忽略");
+                HashMap::new()
+            }
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+        Err(err) => {
+            tracing::warn!(path = %path.display(), error = %err, "读取已知版本失败");
+            HashMap::new()
+        }
+    }
 }
 
 pub fn file_mtime(path: &Path) -> Option<SystemTime> {

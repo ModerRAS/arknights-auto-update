@@ -16,7 +16,7 @@
       </svg>
       <div>
         <h1>明日方舟更新器</h1>
-        <p>官服安装包 · 只比对 clientVersion · 资源热更由游戏自己下载</p>
+        <p>启动后自动检查并安装 · 只比对 clientVersion · 不用守着点按钮</p>
       </div>
     </div>
     <nav class="tabs" role="tablist">
@@ -61,7 +61,8 @@
           <button type="submit">添加设备</button>
         </form>
       </div>
-      <p class="hint">全部更新会处理在线设备，并拉起设置里尚未启动的模拟器。APK 只下载一次，安装按并发数同时进行。</p>
+      <p class="hint" id="auto-status">正在安排自动更新…</p>
+      <p class="hint">按钮只用于马上再跑一次或取消。配好模拟器后，程序自己检查、拉起并安装。APK 只下载一次。</p>
       <div class="table-wrap">
         <table>
           <thead>
@@ -101,7 +102,7 @@
             <input name="install_timeout_secs" type="number" min="60">
           </label>
           <label>自动检查间隔
-            <input name="auto_check_interval" placeholder="留空关闭，例如 6h" autocomplete="off">
+            <input name="auto_check_interval" placeholder="6h，留空或 off 则关闭" autocomplete="off">
           </label>
           <label class="wide">adb 路径
             <span class="row">
@@ -119,7 +120,7 @@
             <textarea name="extra_devices" rows="3" spellcheck="false"></textarea>
           </label>
           <label class="check"><input name="auto_launch_game" type="checkbox"> 安装完成后启动游戏</label>
-          <label class="check"><input name="auto_update_on_check" type="checkbox"> 定时检查到新 clientVersion 后自动更新</label>
+          <label class="check"><input name="auto_update_on_check" type="checkbox"> 发现新的 clientVersion 后自动拉起模拟器并安装</label>
         </div>
         <p class="sub" id="settings-note"></p>
         <div class="toolbar">

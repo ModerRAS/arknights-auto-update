@@ -6,6 +6,8 @@
 
 长任务在 `task` 模块编排：官方版本、设备探测、一次下载、按设备并发安装。下载用 `SingleFlight` 合并同版本请求。每台设备一把 `tokio::Mutex`，安装并发用 `Semaphore`。这些锁都不在下载或安装的全程持有全局 `RwLock`。
 
+无人值守循环在启动约 8 秒后跑第一轮，之后按 `auto_check_interval`（默认 `6h`）重复。`plan_unattended` 只把落后或未知的设备放进本轮：在线设备看刚读到的 `versionName`，离线模拟器看 `known-versions.json`。已经有任务在跑时，下一轮延后一分钟，不取消当前安装。
+
 ```mermaid
 flowchart LR
   WebUI -->|REST / SSE| Axum
