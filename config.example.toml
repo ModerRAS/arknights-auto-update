@@ -1,0 +1,78 @@
+# 明日方舟官服自动更新器配置示例
+# 复制为程序目录下的 config.toml，或让程序在系统配置目录自动生成。
+# WebUI 保存时会重写配置文件，注释以本文件为准。
+#
+# 监听地址只允许本机回环。改完需要重启进程。
+listen = "127.0.0.1:8787"
+
+# 留空表示自动发现。填错时界面会报错，点「检测」会回退到自动发现的 adb。
+adb_path = ""
+
+# APK 缓存目录。留空则使用系统数据目录下的 cache（Windows 为 %APPDATA%\ark-updater\cache）。
+apk_cache_dir = ""
+
+# 同时进行安装的设备数。下载始终只有一份。
+concurrency = 3
+
+# 官方版本的内存缓存，单位秒。
+version_cache_ttl_secs = 600
+
+# 拉起模拟器后等待 adb 上线的秒数。
+device_wait_timeout_secs = 180
+
+# 1.8GB 安装可能要几分钟，不要用 60 秒。
+install_timeout_secs = 1800
+
+# 安装成功后是否启动游戏。启动失败不会把整次更新判成失败。
+auto_launch_game = false
+
+# 无人值守。程序启动后约 8 秒会自己检查并安装，之后按这个间隔重复。
+# 空字符串或 off 才关闭。已经装到当前 clientVersion 的模拟器不会被反复拉起。
+auto_check_interval = "6h"
+
+# 为 true 时，发现更高的 clientVersion（或还不知道设备版本）就自动拉起并安装。
+auto_update_on_check = true
+
+# 可选。非空时跳过官方入口解析，直接下载这个 APK 直链（自建镜像或测试）。
+apk_url_override = ""
+
+# 手动添加的设备，host:port 或 adb 序列号。
+extra_devices = []
+
+# ---------------------------------------------------------------------------
+# MuMu Player 12
+# 启动必须是「程序 + 参数数组」，不要拼成一条带空格的命令字符串。
+# start_program 留空时，程序会找 mumu-cli.exe（或旧名 MuMuManager.exe），
+# 并生成：control -v <vmindex> launch
+# 假设：未填写 adb_port 时，MuMu 12 按 16384 + vmindex * 32 估计；
+# mumu-cli info 能解析到端口时以 JSON 为准。
+# ---------------------------------------------------------------------------
+[[emulators]]
+id = "mumu-0"
+name = "MuMu 12 实例 0"
+kind = "mumu"
+vmindex = 0
+adb_port = 16384
+expected_serial = "127.0.0.1:16384"
+start_program = 'C:\Program Files\Netease\MuMu Player 12\nx_main\mumu-cli.exe'
+start_args = ["control", "-v", "0", "launch"]
+adb_path = 'C:\Program Files\Netease\MuMu Player 12\nx_main\adb.exe'
+install_dir = 'C:\Program Files\Netease\MuMu Player 12'
+
+# ---------------------------------------------------------------------------
+# 雷电 LDPlayer
+# adb 端口公式：5554 + index * 2（index 0 → 5554）。
+# 单开常见的 5555 仍在自动探测列表里。
+# start_program 留空时生成：ldconsole.exe launch --index <index>
+# ---------------------------------------------------------------------------
+[[emulators]]
+id = "ld-0"
+name = "雷电模拟器 实例 0"
+kind = "ldplayer"
+vmindex = 0
+adb_port = 5554
+expected_serial = "127.0.0.1:5554"
+start_program = 'C:\leidian\LDPlayer9\ldconsole.exe'
+start_args = ["launch", "--index", "0"]
+adb_path = ""
+install_dir = 'C:\leidian\LDPlayer9'
