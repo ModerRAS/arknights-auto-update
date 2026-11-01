@@ -1,0 +1,14 @@
+[package]
+name = "arknights-auto-update"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+description = "Command-line entry point for arknights-auto-update"
+repository = "https://github.com/ModerRAS/arknights-auto-update"
+readme = "README.md"
+publish = false
+
+[profile.release]
+strip = "symbols"
+lto = "thin"

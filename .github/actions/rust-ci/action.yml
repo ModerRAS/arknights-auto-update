@@ -1,0 +1,41 @@
+name: Rust CI
+description: Format, lint, test, and build the release binary
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: rust-ci
+
+    - name: Check formatting
+      shell: bash
+      run: cargo fmt --all -- --check
+
+    - name: Run clippy
+      shell: bash
+      run: cargo clippy --all-targets --locked -- -D warnings
+      env:
+        RUSTFLAGS: -Dwarnings
+
+    - name: Run tests
+      shell: bash
+      run: cargo test --locked --all-targets
+      env:
+        RUSTFLAGS: -Dwarnings
+
+    - name: Test release decisions
+      shell: bash
+      run: bash scripts/resolve-release-test.sh
+
+    - name: Build release
+      shell: bash
+      run: cargo build --locked --release
+      env:
+        RUSTFLAGS: -Dwarnings
