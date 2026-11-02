@@ -16,28 +16,31 @@
 2. When 上述任一检查失败时，持续集成应当使该工作流失败。
 3. While 多个检查针对同一引用同时运行, when 新的提交到达时，持续集成应当取消该引用上仍在进行的旧检查。
 
-### 需求 2 - 版本前进时自动发布
+### 需求 2 - 每次推送 master 自动发布
 
-**用户故事：** 作为维护者，我希望把更高的版本合并到 `master` 后自动得到 GitHub Release，以便不用手工上传二进制。
-
-#### 验收标准
-
-1. While 仓库已有至少一个稳定标签 `vX.Y.Z`, when `Cargo.toml` 的 `version` 高于其中最新标签且该提交被推送到 `master` 时，发布流水线应当创建标签 `v<version>` 和对应的 GitHub Release，并上传发布产物。
-2. While 正在自动发布, when 格式检查、Clippy、测试或发布决策脚本测试失败时，发布流水线应当失败并且不上传产物。
-3. While `Cargo.toml` 的 `version` 不高于最新稳定标签, when 提交被推送到 `master` 时，发布流水线应当跳过发布，并在步骤摘要中说明原因。
-4. When 发布流水线创建标签时，该标签应当指向触发这次运行的提交。
-5. While 稳定标签 `v<version>` 已指向当前提交, when 发布流水线再次在该提交上运行时，发布流水线应当更新该 Release 的产物。
-
-### 需求 3 - 第一次发布与手动发布
-
-**用户故事：** 作为维护者，我希望第一次发布由明确操作触发，之后的版本前进再自动发布。
+**用户故事：** 作为维护者，我希望每次把提交推送到 `master` 都自动得到 GitHub Release，以便不用手工上传二进制。
 
 #### 验收标准
 
-1. While 仓库还没有任何稳定标签 `vX.Y.Z`, when 提交被推送到 `master` 时，发布流水线应当跳过发布，并在步骤摘要中说明需要手动发布第一次版本。
-2. When 在 `master` 上手动运行 Release 工作流且未填写标签时，发布流水线应当按 `Cargo.toml` 的 `version` 发布 `v<version>`。
-3. When 手动运行 Release 工作流时填写了标签, the 发布流水线 shall 仅在该标签为 `v<version>` 且与 `Cargo.toml` 版本一致时发布。
-4. When 从 `master` 以外的分支手动运行 Release 工作流时，发布流水线应当失败。
+1. When 提交被推送到 `master`，且 `Cargo.toml` 的 `version` 不低于最新稳定标签（仓库还没有任何稳定标签时也算满足）时，发布流水线应当发布标签 `v<version>` 和对应的 GitHub Release，并上传发布产物。
+2. While 标签 `v<version>` 已经指向其他提交, when 版本号不变的新提交被推送到 `master` 时，发布流水线应当把该标签移动到当前提交，并更新对应 Release 的产物。
+3. While 正在自动发布, when 格式检查、Clippy、测试或发布决策脚本测试失败时，发布流水线应当失败并且不上传产物。
+4. While `Cargo.toml` 的 `version` 低于最新稳定标签, when 提交被推送到 `master` 时，发布流水线应当失败，并且不移动已有标签。
+5. When 发布流水线创建或移动标签时，该标签应当指向触发这次运行的提交。
+6. While 稳定标签 `v<version>` 已指向当前提交, when 发布流水线再次在该提交上运行时，发布流水线应当更新该 Release 的产物，并且不改变标签指向。
+7. While 同一次仓库已经有发布在进行, when 新的提交被推送到 `master` 时，发布流水线应当取消仍在进行的旧发布。
+
+### 需求 3 - 手动发布
+
+**用户故事：** 作为维护者，我希望可以在 `master` 上再手动发布一次当前版本。
+
+#### 验收标准
+
+1. When 在 `master` 上手动运行 Release 工作流且未填写标签时，发布流水线应当按 `Cargo.toml` 的 `version` 发布 `v<version>`。
+2. When 手动运行 Release 工作流时填写了标签, the 发布流水线 shall 仅在该标签为 `v<version>` 且与 `Cargo.toml` 版本一致时发布。
+3. When 从 `master` 以外的分支手动运行 Release 工作流时，发布流水线应当失败。
+4. While 目标标签已指向其他提交, when 在 `master` 上手动发布当前版本时，发布流水线应当把该标签移动到当前提交。
+5. While `Cargo.toml` 的 `version` 低于最新稳定标签, when 手动运行 Release 工作流时，发布流水线应当失败，并且不移动已有标签。
 
 ### 需求 4 - 版本与标签一致
 
@@ -46,8 +49,9 @@
 #### 验收标准
 
 1. When 推送的标签不是不含前导零的 `vMAJOR.MINOR.PATCH`，或与 `Cargo.toml` 的 `version` 不一致时，发布流水线应当失败并且不上传产物。
-2. While 目标标签已经存在且指向其他提交, when 再次发布该标签时，发布流水线应当失败，并保留原来的标签位置。
-3. When `Cargo.toml` 的 `version` 不是不含前导零的 `MAJOR.MINOR.PATCH` 时，测试应当失败。
+2. When 推送的稳定标签与 `Cargo.toml` 版本一致，但该标签引用的提交不是这次工作流的提交时，发布流水线应当失败，并且不移动该标签。
+3. While `Cargo.toml` 的 `version` 低于最新稳定标签, when 推送与该版本一致的标签时，发布流水线应当失败，并且不移动已有标签。
+4. When `Cargo.toml` 的 `version` 不是不含前导零的 `MAJOR.MINOR.PATCH` 时，测试应当失败。
 
 ### 需求 5 - 发布产物
 

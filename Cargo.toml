@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-axum = "0.7.9"
+axum = "0.8.9"
 clap = { version = "4", features = ["derive"] }
 dashmap = "6"
 futures = "0.3"
@@ -20,17 +20,17 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 rust-embed = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "1"
+thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
-toml = "0.8"
-tower-http = { version = "0.5.2", features = ["compression-gzip", "fs", "trace"] }
+toml = "1.1"
+tower-http = { version = "0.6.11", features = ["compression-gzip", "fs", "trace"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [target.'cfg(windows)'.dependencies]
-winreg = "0.52"
+winreg = "0.56"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -36,7 +36,7 @@ assert_release() {
 assert_skip() {
   local name="$1" expected_reason="$2"
   shift 2
-  local out reason release tag
+  local out reason release tag retarget
   if ! out="$(decide_release "$@" 2>/dev/null)"; then
     echo "FAIL ${name} (unexpected error)"
     fail=1
@@ -45,7 +45,8 @@ assert_skip() {
   reason="$(field reason "$out")"
   release="$(field release "$out")"
   tag="$(field tag "$out")"
-  if [[ "$release" != false || "$reason" != "$expected_reason" || -n "$tag" ]]; then
+  retarget="$(field retarget "$out")"
+  if [[ "$release" != false || "$reason" != "$expected_reason" || -n "$tag" || "$retarget" != false ]]; then
     echo "FAIL ${name}"
     printf '%s\n' "$out"
     fail=1
@@ -90,26 +91,54 @@ assert_release "manual explicit tag" manual v0.2.0 \
   workflow_dispatch refs/heads/master 0.2.0 v0.1.0 v0.2.0 "" "$HEAD_SHA"
 assert_release "rebuild when tag matches head" manual v0.1.0 \
   workflow_dispatch refs/heads/master 0.1.0 v0.1.0 "" "$HEAD_SHA" "$HEAD_SHA"
+assert_release "manual moves existing tag" manual v0.1.0 \
+  workflow_dispatch refs/heads/master 0.1.0 v0.1.0 "" "$OTHER_SHA" "$HEAD_SHA"
 
-assert_skip "first master push" no_prior_tag \
+assert_release "first master push" master_push v0.1.0 \
   push refs/heads/master 0.1.0 "" "" "" "$HEAD_SHA"
 assert_release "rebuild current tag" rebuild v0.1.0 \
   push refs/heads/master 0.1.0 v0.1.0 "" "$HEAD_SHA" "$HEAD_SHA"
-assert_skip "same version" version_not_newer \
+assert_release "same version without recorded sha" master_push v0.1.0 \
   push refs/heads/master 0.1.0 v0.1.0 "" "" "$HEAD_SHA"
-assert_skip "same version on later commit" version_not_newer \
+assert_release "same version on later commit" retarget v0.1.0 \
   push refs/heads/master 0.1.0 v0.1.0 "" "$OTHER_SHA" "$HEAD_SHA"
-assert_skip "older version" version_not_newer \
-  push refs/heads/master 0.9.0 v1.0.0 "" "" "$HEAD_SHA"
 assert_skip "feature branch" ignored_ref \
   push refs/heads/feature 0.2.0 v0.1.0 "" "" "$HEAD_SHA"
 
 first_out="$(decide_release push refs/heads/master 0.1.0 "" "" "" "$HEAD_SHA")"
-if ! field message "$first_out" | grep -F -q "手动"; then
+if [[ "$(field release "$first_out")" != true ]] || ! field message "$first_out" | grep -F -q "自动发布"; then
   echo "FAIL first-release message"
+  printf '%s\n' "$first_out"
   fail=1
 else
   echo "ok first-release message"
+fi
+
+move_out="$(decide_release push refs/heads/master 0.1.0 v0.1.0 "" "$OTHER_SHA" "$HEAD_SHA")"
+if [[ "$(field retarget "$move_out")" != true ]]; then
+  echo "FAIL retarget flag"
+  printf '%s\n' "$move_out"
+  fail=1
+else
+  echo "ok retarget flag"
+fi
+
+manual_move="$(decide_release workflow_dispatch refs/heads/master 0.1.0 v0.1.0 "" "$OTHER_SHA" "$HEAD_SHA")"
+if [[ "$(field release "$manual_move")" != true || "$(field reason "$manual_move")" != manual || "$(field retarget "$manual_move")" != true ]]; then
+  echo "FAIL manual retarget flag"
+  printf '%s\n' "$manual_move"
+  fail=1
+else
+  echo "ok manual retarget flag"
+fi
+
+bump_out="$(decide_release push refs/heads/master 0.1.1 v0.1.0 "" "" "$HEAD_SHA")"
+if [[ "$(field retarget "$bump_out")" != false || "$(field reason "$bump_out")" != version_bump ]]; then
+  echo "FAIL version bump does not retarget"
+  printf '%s\n' "$bump_out"
+  fail=1
+else
+  echo "ok version bump does not retarget"
 fi
 
 assert_error "bad cargo version" "MAJOR.MINOR.PATCH" \
@@ -126,8 +155,14 @@ assert_error "manual tag mismatch" "不一致" \
   workflow_dispatch refs/heads/master 0.1.0 "" v0.2.0 "" "$HEAD_SHA"
 assert_error "manual from feature" "master" \
   workflow_dispatch refs/heads/feature 0.1.0 "" "" "" "$HEAD_SHA"
+assert_error "older version" "低于" \
+  push refs/heads/master 0.9.0 v1.0.0 "" "" "$HEAD_SHA"
+assert_error "manual older version" "低于" \
+  workflow_dispatch refs/heads/master 0.9.0 v1.0.0 "" "" "$HEAD_SHA"
+assert_error "tag push older version" "低于" \
+  push refs/tags/v0.9.0 0.9.0 v1.0.0 "" "$HEAD_SHA" "$HEAD_SHA"
 assert_error "tag points elsewhere" "已指向" \
-  workflow_dispatch refs/heads/master 0.1.0 v0.1.0 "" "$OTHER_SHA" "$HEAD_SHA"
+  push refs/tags/v0.1.0 0.1.0 "" "" "$OTHER_SHA" "$HEAD_SHA"
 assert_error "empty head" "SHA 为空" \
   workflow_dispatch refs/heads/master 0.1.0 "" "" "" ""
 assert_error "bad latest tag" "最新标签" \
@@ -224,7 +259,7 @@ commit_all "$repo" "init"
 out="$(mktemp)"
 cleanup_dirs+=("$out")
 run_plan "$repo" push refs/heads/master "$out"
-if [[ "$(field release "$(cat "$out")")" != false || "$(field reason "$(cat "$out")")" != no_prior_tag ]]; then
+if [[ "$(field release "$(cat "$out")")" != true || "$(field reason "$(cat "$out")")" != master_push || "$(field tag "$(cat "$out")")" != v0.1.0 || "$(field retarget "$(cat "$out")")" != false ]]; then
   echo "FAIL git first push"
   cat "$out"
   fail=1
@@ -240,7 +275,7 @@ git -C "$repo" tag v0.10.0
 git -C "$repo" commit --allow-empty -m "later" >/dev/null
 : >"$out"
 run_plan "$repo" push refs/heads/master "$out"
-if [[ "$(field release "$(cat "$out")")" != false || "$(field reason "$(cat "$out")")" != version_not_newer ]]; then
+if [[ "$(field release "$(cat "$out")")" != true || "$(field reason "$(cat "$out")")" != retarget || "$(field tag "$(cat "$out")")" != v0.10.0 || "$(field retarget "$(cat "$out")")" != true ]]; then
   echo "FAIL git latest tag ordering"
   cat "$out"
   fail=1
@@ -320,14 +355,43 @@ if (
     GITHUB_OUTPUT="$out" \
     bash "$SCRIPT" >/dev/null 2>"${out}.err"
 ); then
-  echo "FAIL git moved tag should fail"
+  if [[ "$(field release "$(cat "$out")")" != true || "$(field retarget "$(cat "$out")")" != true || "$(field tag "$(cat "$out")")" != v0.1.0 ]]; then
+    echo "FAIL git manual retarget"
+    cat "$out"
+    fail=1
+  else
+    echo "ok git manual retarget"
+  fi
+else
+  echo "FAIL git manual retarget should publish"
+  cat "${out}.err"
   fail=1
-elif ! grep -F -q "已指向" "${out}.err"; then
-  echo "FAIL git moved tag stderr"
+fi
+rm -f "${out}.err"
+
+repo="$(new_repo)"
+write_version "$repo" "0.1.0"
+commit_all "$repo" "init"
+git -C "$repo" tag v0.2.0
+: >"$out"
+if (
+  cd "$repo"
+  env -u GITHUB_STEP_SUMMARY -u GIT_DIR -u GIT_WORK_TREE \
+    RELEASE_EVENT=push \
+    RELEASE_REF=refs/heads/master \
+    RELEASE_INPUT_TAG="" \
+    RELEASE_HEAD_SHA="$(git rev-parse HEAD)" \
+    GITHUB_OUTPUT="$out" \
+    bash "$SCRIPT" >/dev/null 2>"${out}.err"
+); then
+  echo "FAIL git downgrade should fail"
+  fail=1
+elif ! grep -F -q "低于" "${out}.err"; then
+  echo "FAIL git downgrade stderr"
   cat "${out}.err"
   fail=1
 else
-  echo "ok git tag points elsewhere"
+  echo "ok git downgrade"
 fi
 rm -f "${out}.err"
 

@@ -112,8 +112,8 @@ GET  /api/config
 PUT  /api/config
 GET  /api/emulators
 POST /api/emulators
-PUT  /api/emulators/:id
-DELETE /api/emulators/:id
+PUT  /api/emulators/{id}
+DELETE /api/emulators/{id}
 POST /api/adb/probe            { "path": "...", "apply_fallback": true }
 GET  /api/logs
 GET  /api/events
@@ -154,7 +154,7 @@ GET  /api/events
 
 版本号以 `Cargo.toml` 的 `version` 为准，标签是 `v<version>`。推送到 `master` 或打开 Pull Request 时，CI 会在 Ubuntu 和 Windows 上做 `cargo fmt --check`、`cargo clippy -- -D warnings` 和 `cargo test`。Ubuntu 还会跑发布决策脚本。
 
-还没有 `vX.Y.Z` 标签时，推送 `master` 不会发布。第一次在 Actions 里对 `master` 运行 **Release**，或推送与版本一致的标签，例如 `v0.1.0`。之后把 `version` 提高到比最新稳定标签更大，运行 `cargo check` 更新 `Cargo.lock`，再合并到 `master`，流水线会创建 GitHub Release 并上传这些压缩包和 SHA256：
+每次推送到 `master`，Release 工作流都会发布 `v<version>`：还没有这个标签就创建它；版本号升高就新建更高的标签；版本号不变就把现有标签移到这次提交并更新 Release 里的压缩包。`version` 如果低于已有的最高稳定标签，工作流失败，不会改旧标签。也可以在 Actions 里对 `master` 手动运行 **Release**。检查失败时不会上传产物。更新依赖后运行 `cargo update` 再合并，流水线会上传这些压缩包和 SHA256：
 
 | 目标 | 平台 |
 | --- | --- |
@@ -164,4 +164,4 @@ GET  /api/events
 | `aarch64-apple-darwin` | macOS Apple 芯片 |
 | `x86_64-apple-darwin` | macOS Intel |
 
-压缩包内是 `ark-updater`、`LICENSE`、`README.md` 和 `config.example.toml`。同一次提交上重新运行会更新已有 Release 的产物。标签若已指向别的提交，流水线失败且不移动该标签。发布使用 Actions 自带的 `GITHUB_TOKEN`。
+压缩包内是 `ark-updater`、`LICENSE`、`README.md` 和 `config.example.toml`。同一个版本标签会跟着 `master` 上的最新提交走，所以 `v0.1.0` 这样的标签不是不可变的；要留住旧构建，先把 `Cargo.toml` 的 `version` 提高再合并。更新的推送会取消还在跑的上一次发布。发布使用 Actions 自带的 `GITHUB_TOKEN`，因此工作流自己推上去的标签不会再触发一次发布。

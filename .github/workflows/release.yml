@@ -17,7 +17,7 @@ permissions:
 
 concurrency:
   group: release-${{ github.repository }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,6 +32,7 @@ jobs:
       tag: ${{ steps.plan.outputs.tag }}
       version: ${{ steps.plan.outputs.version }}
       reason: ${{ steps.plan.outputs.reason }}
+      retarget: ${{ steps.plan.outputs.retarget }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -71,6 +72,36 @@ jobs:
       contents: write
       pull-requests: read
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Point version tag at this commit
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin master --tags --force --quiet
+          if [[ "${GITHUB_REF}" == "refs/heads/master" ]]; then
+            remote_head="$(git rev-parse refs/remotes/origin/master)"
+            if [[ "$remote_head" != "$SHA" ]]; then
+              echo "master 已前进到 ${remote_head}，取消这次过期的发布。" >&2
+              exit 1
+            fi
+          fi
+          if git rev-parse -q --verify "refs/tags/${TAG}^{}" >/dev/null; then
+            current="$(git rev-parse "refs/tags/${TAG}^{}")"
+            if [[ "$current" != "$SHA" ]]; then
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git tag -f "$TAG" "$SHA"
+              git push --force origin "refs/tags/${TAG}"
+            fi
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
@@ -110,12 +141,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Confirm release tag
+        id: confirm
+        shell: bash
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}" --force
+          current="$(git rev-parse "refs/tags/${TAG}^{}")"
+          if [[ "$current" == "$SHA" ]]; then
+            echo "upload=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "upload=false" >> "$GITHUB_OUTPUT"
+            echo "标签 ${TAG} 指向 ${current}，当前提交是 ${SHA}，跳过上传。"
+          fi
+
       - name: Cache cargo
+        if: steps.confirm.outputs.upload == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: release-${{ matrix.target }}
 
       - name: Build and upload
+        if: steps.confirm.outputs.upload == 'true'
         uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: ark-updater
