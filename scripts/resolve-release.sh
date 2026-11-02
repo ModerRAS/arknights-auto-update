@@ -14,6 +14,18 @@ is_tag() {
   [[ "$1" =~ $TAG_RE ]]
 }
 
+ensure_not_downgrade() {
+  local cargo="$1"
+  local latest="$2"
+  if [[ -z "$latest" ]]; then
+    return 0
+  fi
+  if [[ "$(semver_cmp "$cargo" "${latest#v}")" == -1 ]]; then
+    echo "版本 ${cargo} 低于最新稳定标签 ${latest}，拒绝发布。" >&2
+    return 1
+  fi
+}
+
 semver_cmp() {
   local a="$1" b="$2"
   local -a aa bb
@@ -77,7 +89,7 @@ decide_release() {
   local input="$5"
   local tag_sha="$6"
   local head="$7"
-  local tag="" reason="" message="" release=false version="$cargo" cmp
+  local tag="" reason="" message="" release=false version="$cargo" cmp retarget=false
 
   if ! is_semver "$cargo"; then
     echo "Cargo.toml version 不是不含前导零的 MAJOR.MINOR.PATCH: $cargo" >&2
@@ -107,6 +119,7 @@ decide_release() {
         echo "标签 $tag 与 Cargo.toml 版本 $cargo 不一致" >&2
         return 1
       fi
+      ensure_not_downgrade "$cargo" "$latest" || return 1
       reason="manual"
       message="手动发布 ${tag}。"
       release=true
@@ -122,32 +135,32 @@ decide_release() {
           echo "标签 $tag 与 Cargo.toml 版本 $cargo 不一致" >&2
           return 1
         fi
+        ensure_not_downgrade "$cargo" "$latest" || return 1
         reason="tag_push"
         message="推送标签 ${tag}，开始发布。"
         release=true
       elif [[ "$ref" == "refs/heads/master" ]]; then
-        if [[ -z "$latest" ]]; then
-          reason="no_prior_tag"
-          message="还没有稳定版本标签，跳过自动发布。请手动运行 Release 工作流，或推送标签 v${cargo}。"
-          release=false
-        else
+        tag="v${cargo}"
+        ensure_not_downgrade "$cargo" "$latest" || return 1
+        if [[ -n "$latest" ]]; then
           cmp="$(semver_cmp "$cargo" "${latest#v}")"
-          if [[ "$cmp" == 1 ]]; then
-            tag="v${cargo}"
-            reason="version_bump"
-            message="版本 ${cargo} 高于最新标签 ${latest}，自动发布 ${tag}。"
-            release=true
-          elif [[ "$cmp" == 0 && -n "$tag_sha" && "$tag_sha" == "$head" ]]; then
-            tag="v${cargo}"
-            reason="rebuild"
-            message="版本 ${cargo} 的标签已指向当前提交，重新发布 ${tag}。"
-            release=true
-          else
-            reason="version_not_newer"
-            message="版本 ${cargo} 不高于最新标签 ${latest}，跳过自动发布。"
-            release=false
-          fi
+        else
+          cmp=1
         fi
+        if [[ -n "$tag_sha" && "$tag_sha" == "$head" ]]; then
+          reason="rebuild"
+          message="版本 ${cargo} 的标签已指向当前提交，重新发布 ${tag}。"
+        elif [[ -n "$tag_sha" ]]; then
+          reason="retarget"
+          message="将标签 ${tag} 移动到当前提交并发布。"
+        elif [[ "$cmp" == 1 && -n "$latest" ]]; then
+          reason="version_bump"
+          message="版本 ${cargo} 高于最新标签 ${latest}，自动发布 ${tag}。"
+        else
+          reason="master_push"
+          message="推送 master，自动发布 ${tag}。"
+        fi
+        release=true
       else
         reason="ignored_ref"
         message="引用 ${ref} 不触发发布。"
@@ -170,8 +183,11 @@ decide_release() {
       return 1
     fi
     if [[ -n "$tag_sha" && "$tag_sha" != "$head" ]]; then
-      echo "标签 $tag 已指向 $tag_sha，而不是 $head" >&2
-      return 1
+      if [[ "$event" == "push" && "$ref" == refs/tags/* ]]; then
+        echo "标签 $tag 已指向 $tag_sha，而不是 $head" >&2
+        return 1
+      fi
+      retarget=true
     fi
   fi
 
@@ -179,6 +195,7 @@ decide_release() {
   printf 'tag=%s\n' "$tag"
   printf 'version=%s\n' "$version"
   printf 'reason=%s\n' "$reason"
+  printf 'retarget=%s\n' "$retarget"
   printf 'message=%s\n' "$message"
 }
 
@@ -199,7 +216,7 @@ decide_from_env() {
 
 write_outputs() {
   local out="$1"
-  local release tag version message
+  local release tag version message retarget
   printf '%s\n' "$out"
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     printf '%s\n' "$out" >>"$GITHUB_OUTPUT"
@@ -208,6 +225,7 @@ write_outputs() {
   tag="$(field tag "$out")"
   version="$(field version "$out")"
   message="$(field message "$out")"
+  retarget="$(field retarget "$out")"
   if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
     echo "::notice title=发布计划::${message}"
   fi
@@ -225,6 +243,11 @@ write_outputs() {
         echo "- 标签: ${tag}"
       else
         echo "- 标签: （无）"
+      fi
+      if [[ "$retarget" == true ]]; then
+        echo "- 移动标签: 是"
+      else
+        echo "- 移动标签: 否"
       fi
       echo "- 说明: ${message}"
     } >>"$GITHUB_STEP_SUMMARY"

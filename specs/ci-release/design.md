@@ -9,11 +9,12 @@ flowchart TD
   pr[Pull Request] --> ci[持续集成]
   pushMaster[推送 master] --> ci
   pushMaster --> plan[解析版本]
-  plan -->|跳过| skip[保留现有发布]
-  plan -->|版本更高| verify[格式检查与测试]
+  plan -->|版本更低| fail[失败且不移动标签]
+  plan -->|发布当前版本| verify[格式检查与测试]
   tagPush[推送版本标签] --> verify
   manual[手动运行 Release] --> verify
-  verify --> release[创建 GitHub Release]
+  verify --> move[必要时把 v版本 移到当前提交]
+  move --> release[创建或更新 GitHub Release]
   release --> assets[上传五个平台的压缩包和校验文件]
 ```
 
@@ -33,16 +34,16 @@ flowchart TD
 
 | 事件 | 条件 | 结果 |
 | --- | --- | --- |
-| 推送 `master` | 还没有稳定标签 | 跳过，并提示手动发布第一次 |
-| 推送 `master` | `version` 高于最新稳定标签 | 发布 `v<version>` |
+| 推送 `master` | 还没有稳定标签，或 `version` 高于最新稳定标签 | 发布 `v<version>` |
 | 推送 `master` | `version` 等于最新稳定标签，且该标签指向当前提交 | 重新上传该 Release 的产物 |
-| 推送 `master` | `version` 不高于最新稳定标签，且标签不指向当前提交 | 跳过 |
-| 推送标签 | 标签与 `version` 一致 | 发布该标签 |
-| 推送标签 | 标签与 `version` 不一致，或不是稳定版本号 | 失败 |
-| 手动运行 | 分支是 `master`，标签为空或等于 `v<version>` | 发布 |
-| 手动运行 | 分支不是 `master`，或标签与版本不一致 | 失败 |
+| 推送 `master` | `version` 等于当前版本标签，但标签指向更早的提交 | 把 `v<version>` 移到当前提交并更新产物 |
+| 推送 `master` | `version` 低于最新稳定标签 | 失败，不移动已有标签 |
+| 推送标签 | 标签与 `version` 一致，且指向当前提交 | 发布该标签 |
+| 推送标签 | 标签与 `version` 不一致、不是稳定版本号、指向其他提交，或 `version` 低于最新稳定标签 | 失败 |
+| 手动运行 | 分支是 `master`，标签为空或等于 `v<version>`，且版本不低于最新稳定标签 | 发布；标签若指向其他提交则移动它 |
+| 手动运行 | 分支不是 `master`、标签与版本不一致，或版本低于最新稳定标签 | 失败 |
 
-准备发布的标签如果已经指向其他提交，脚本失败，工作流不创建 Release，因此不会移动标签。版本与最新标签相同、但标签指向更早的提交时，推送 `master` 会跳过。`master` 上的自动发布由同一次工作流创建标签并上传产物；用默认 `GITHUB_TOKEN` 创建的标签不会再次触发工作流。
+同一个版本在 `master` 上的后续提交会移动标签 `v<version>`，Release 始终对应该版本的最新 `master` 提交。更高版本使用新标签，旧标签保留。新的 `master` 推送会取消尚未完成的发布；如果取消前 `master` 已经前进，这次发布会失败，避免旧提交把标签移回去。`master` 上的自动发布由同一次工作流创建或移动标签并上传产物；用默认 `GITHUB_TOKEN` 创建或强制更新的标签不会再次触发工作流。
 
 ## 发布产物
 
@@ -68,13 +69,13 @@ flowchart TD
 ## 测试策略
 
 - `cargo test` 覆盖参数解析、版本号格式，以及 `--version`、`--help` 和错误退出码。
-- `scripts/resolve-release-test.sh` 覆盖决策表，并用临时 Git 仓库覆盖“选择最新标签”“第一次跳过”“标签指向其他提交”。
+- `scripts/resolve-release-test.sh` 覆盖决策表，并用临时 Git 仓库覆盖“选择最新标签”“第一次发布”“同版本移动标签”和“版本降低失败”。
 - 本地用 shellcheck 和 actionlint 检查脚本与工作流。
 - 多平台上传依赖 GitHub 托管运行器，本地不执行实际上传。
 
 ## 安全性
 
 - 进入标签和版本比较的字符串先经正则校验，再写入工作流输出。
-- 发布任务不移动已经指向其他提交的标签。
+- 发布任务只移动当前 `Cargo.toml` 版本对应的标签。版本降低时失败，不改写更高版本的标签。直接推送的标签如果没有指向当前提交，工作流失败。
 - Release 构建使用 `--locked`，并提交 `Cargo.lock`。
 - CI 的 `RUSTFLAGS=-Dwarnings` 只加在检查任务上，避免上传任务在安装交叉编译工具时把警告当成错误。

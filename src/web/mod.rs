@@ -31,7 +31,7 @@ pub fn router(state: SharedState) -> Router {
             get(api::list_emulators).post(api::create_emulator),
         )
         .route(
-            "/api/emulators/:id",
+            "/api/emulators/{id}",
             axum::routing::put(api::update_emulator).delete(api::delete_emulator),
         )
         .route("/api/adb/probe", post(api::probe_adb))
@@ -62,5 +62,61 @@ async fn static_handler(uri: Uri) -> Response {
                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
         None => (StatusCode::NOT_FOUND, "未找到页面").into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::config::AppConfig;
+    use crate::state::{AppPaths, AppState, LogLine};
+
+    #[tokio::test]
+    async fn emulator_route_captures_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (events, _rx) = tokio::sync::broadcast::channel(8);
+        let recent = Arc::new(std::sync::Mutex::new(
+            std::collections::VecDeque::<LogLine>::new(),
+        ));
+        let client = reqwest::Client::builder().build().expect("client");
+        let state = AppState::new(
+            AppConfig::default(),
+            AppPaths {
+                config_path: dir.path().join("config.toml"),
+                data_dir: dir.path().to_path_buf(),
+                log_dir: dir.path().join("logs"),
+            },
+            "127.0.0.1:0".into(),
+            events,
+            recent,
+            client.clone(),
+            client,
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            axum::serve(listener, router(state)).await.expect("serve");
+        });
+
+        let client = reqwest::Client::builder().build().expect("client");
+        let url = format!("http://{addr}/api/emulators/missing-id");
+        let mut body = String::new();
+        for _ in 0..20 {
+            match client.delete(&url).send().await {
+                Ok(response) => {
+                    body = response.text().await.expect("body");
+                    break;
+                }
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+            }
+        }
+        assert!(
+            body.contains("没有 id 为 missing-id"),
+            "路由没有捕获 id：{body}"
+        );
     }
 }
