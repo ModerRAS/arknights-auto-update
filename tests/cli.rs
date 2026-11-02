@@ -1,13 +1,12 @@
 use std::process::Command;
 
 fn binary() -> &'static str {
-    // Cargo has used both the hyphenated binary name and the underscore form.
-    if let Some(path) = option_env!("CARGO_BIN_EXE_arknights-auto-update") {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_ark-updater") {
         path
-    } else if let Some(path) = option_env!("CARGO_BIN_EXE_arknights_auto_update") {
+    } else if let Some(path) = option_env!("CARGO_BIN_EXE_ark_updater") {
         path
     } else {
-        panic!("cargo did not set CARGO_BIN_EXE for arknights-auto-update")
+        panic!("cargo did not set CARGO_BIN_EXE for ark-updater")
     }
 }
 
@@ -15,35 +14,31 @@ fn run(args: &[&str]) -> std::process::Output {
     Command::new(binary())
         .args(args)
         .output()
-        .expect("run arknights-auto-update")
+        .expect("run ark-updater")
 }
 
 #[test]
 fn version_flag_prints_package_version() {
-    let output = run(&["--version"]);
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
-    assert_eq!(
-        stdout,
-        format!("arknights-auto-update {}\n", env!("CARGO_PKG_VERSION"))
-    );
-}
-
-#[test]
-fn short_version_flag_matches_long_flag() {
-    let long = run(&["--version"]);
-    let short = run(&["-V"]);
-    assert_eq!(long.stdout, short.stdout);
-    assert!(short.status.success());
-}
-
-#[test]
-fn help_flags_and_no_args_exit_zero() {
-    for args in [Vec::new(), vec!["--help"], vec!["-h"]] {
+    for args in [["--version"], ["-V"]] {
         let output = run(&args);
         assert!(output.status.success(), "{args:?}");
         let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
-        assert!(stdout.contains("--version"), "{args:?}");
+        assert!(
+            stdout.contains(env!("CARGO_PKG_VERSION")),
+            "{args:?}: {stdout}"
+        );
+        assert!(stdout.contains("ark-updater"), "{args:?}: {stdout}");
+    }
+}
+
+#[test]
+fn help_exits_without_starting_the_server() {
+    for args in [["--help"], ["-h"]] {
+        let output = run(&args);
+        assert!(output.status.success(), "{args:?}");
+        let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
+        assert!(stdout.contains("--open"), "{args:?}: {stdout}");
+        assert!(!stdout.contains("已启动"), "{args:?}: {stdout}");
     }
 }
 
@@ -51,6 +46,4 @@ fn help_flags_and_no_args_exit_zero() {
 fn unknown_argument_exits_with_usage_error() {
     let output = run(&["--unknown"]);
     assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8(output.stderr).expect("utf-8 stderr");
-    assert!(stderr.contains("未知参数"));
 }

@@ -1,20 +1,7 @@
-use std::env;
-use std::process::ExitCode;
-
-fn main() -> ExitCode {
-    match arknights_auto_update::parse_args(env::args().skip(1)) {
-        Ok(arknights_auto_update::Command::Help) => {
-            print!("{}", arknights_auto_update::help());
-            ExitCode::SUCCESS
-        }
-        Ok(arknights_auto_update::Command::Version) => {
-            println!("{}", arknights_auto_update::version_line());
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            eprintln!("错误: {err}");
-            eprint!("{}", arknights_auto_update::help());
-            ExitCode::from(2)
-        }
+#[tokio::main]
+async fn main() {
+    if let Err(err) = ark_updater::run().await {
+        eprintln!("启动失败：{err:#}");
+        std::process::exit(1);
     }
 }

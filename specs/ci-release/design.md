@@ -21,7 +21,7 @@ flowchart TD
 
 ## 技术栈
 
-- Rust stable，edition 2024，`rust-toolchain.toml` 固定渠道。命令行只使用标准库。
+- 程序是 `ark-updater`（edition 2021，`rust-version` 1.88）。CI 使用 Rust stable。`rust-toolchain.toml` 把本地渠道固定为 stable。
 - GitHub Actions：`actions/checkout@v7`、`dtolnay/rust-toolchain@stable`、`Swatinem/rust-cache@v2`、`softprops/action-gh-release@v3`、`taiki-e/upload-rust-binary-action@v1`。
 - Dependabot 每周检查 Actions 和 Cargo 依赖更新。
 

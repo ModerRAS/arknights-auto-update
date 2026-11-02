@@ -2,7 +2,7 @@
 
 ## 介绍
 
-`arknights-auto-update` 需要持续集成，以及在版本前进时自动构建并发布到 GitHub Releases。版本以 `Cargo.toml` 的 `version` 为准，发布标签为 `v<version>`。发布物是各平台可执行文件压缩包和 SHA256 校验，供没有 Rust 工具链的环境下载运行。
+`ark-updater` 需要持续集成，以及在版本前进时自动构建并发布到 GitHub Releases。版本以 `Cargo.toml` 的 `version` 为准，发布标签为 `v<version>`。发布物是各平台可执行文件压缩包和 SHA256 校验，供没有 Rust 工具链的环境下载运行。
 
 ## 需求
 
@@ -65,6 +65,6 @@
 
 #### 验收标准
 
-1. When 执行 `arknights-auto-update --version` 或 `-V` 时，程序应当以退出码 0 输出包名和 `Cargo.toml` 中的版本号。
-2. When 执行 `arknights-auto-update --help`、`-h` 或不带参数时，程序应当以退出码 0 输出用法。
-3. When 参数无法识别或参数过多时，程序应当以退出码 2 退出，并在标准错误输出错误说明。
+1. When 执行 `ark-updater --version` 或 `-V` 时，程序应当以退出码 0 输出版本号，且该版本号与 `Cargo.toml` 一致。
+2. When 执行 `ark-updater --help` 或 `-h` 时，程序应当以退出码 0 输出用法，并且不启动 WebUI。
+3. When 参数无法识别时，程序应当以退出码 2 退出。

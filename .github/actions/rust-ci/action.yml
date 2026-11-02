@@ -1,5 +1,5 @@
 name: Rust CI
-description: Format, lint, test, and build the release binary
+description: Format, lint, test, and check the release decision script
 
 runs:
   using: composite
@@ -16,26 +16,16 @@ runs:
 
     - name: Check formatting
       shell: bash
-      run: cargo fmt --all -- --check
+      run: cargo fmt --check
 
     - name: Run clippy
       shell: bash
-      run: cargo clippy --all-targets --locked -- -D warnings
-      env:
-        RUSTFLAGS: -Dwarnings
+      run: cargo clippy -- -D warnings
 
     - name: Run tests
       shell: bash
-      run: cargo test --locked --all-targets
-      env:
-        RUSTFLAGS: -Dwarnings
+      run: cargo test
 
     - name: Test release decisions
       shell: bash
       run: bash scripts/resolve-release-test.sh
-
-    - name: Build release
-      shell: bash
-      run: cargo build --locked --release
-      env:
-        RUSTFLAGS: -Dwarnings

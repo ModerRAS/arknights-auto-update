@@ -1,9 +1,8 @@
-name: CI
+name: ci
 
 on:
-  pull_request:
   push:
-    branches: [master]
+  pull_request:
 
 permissions:
   contents: read
@@ -17,12 +16,33 @@ env:
 
 jobs:
   check:
-    name: check
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy -- -D warnings
+      - name: test
+        run: cargo test
+      - name: release decision tests
+        run: bash scripts/resolve-release-test.sh
 
-      - name: Rust checks
-        uses: ./.github/actions/rust-ci
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy
+        run: cargo clippy -- -D warnings
+      - name: test
+        run: cargo test

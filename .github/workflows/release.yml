@@ -118,11 +118,11 @@ jobs:
       - name: Build and upload
         uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: arknights-auto-update
+          bin: ark-updater
           target: ${{ matrix.target }}
           locked: true
           checksum: sha256
-          include: LICENSE,README.md
+          include: LICENSE,README.md,config.example.toml
           leading-dir: true
           tar: unix
           zip: windows
