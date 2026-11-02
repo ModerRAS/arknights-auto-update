@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-axum = "0.7.9"
+axum = "0.8.9"
 clap = { version = "4", features = ["derive"] }
 dashmap = "6"
 futures = "0.3"
