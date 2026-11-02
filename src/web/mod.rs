@@ -25,6 +25,8 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/check", post(api::check))
         .route("/api/update", post(api::update))
         .route("/api/update/cancel", post(api::cancel))
+        .route("/api/app-update/check", post(api::app_update_check))
+        .route("/api/app-update/apply", post(api::app_update_apply))
         .route("/api/config", get(api::get_config).put(api::put_config))
         .route(
             "/api/emulators",

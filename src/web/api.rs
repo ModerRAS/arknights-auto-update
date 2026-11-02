@@ -37,6 +37,9 @@ pub async fn state(State(state): State<SharedState>) -> Json<Value> {
         "device_count": devices.len(),
         "active_tasks": active,
         "auto": state.auto.read().await.clone(),
+        "app_update": state.app_update.read().await.clone(),
+        "watch": state.watch.read().await.clone(),
+        "proxy": state.proxy.read().await.clone(),
     }))
 }
 
@@ -105,6 +108,18 @@ pub async fn cancel(State(state): State<SharedState>) -> Json<Value> {
     Json(json!({"ok": true}))
 }
 
+pub async fn app_update_check(State(state): State<SharedState>) -> Result<Json<Value>, ApiError> {
+    crate::maintenance::begin_app_update(&state, crate::maintenance::ApplyMode::CheckOnly)
+        .map_err(|message| err(StatusCode::CONFLICT, message))?;
+    Ok(Json(json!({"ok": true})))
+}
+
+pub async fn app_update_apply(State(state): State<SharedState>) -> Result<Json<Value>, ApiError> {
+    crate::maintenance::begin_app_update(&state, crate::maintenance::ApplyMode::Manual)
+        .map_err(|message| err(StatusCode::CONFLICT, message))?;
+    Ok(Json(json!({"ok": true})))
+}
+
 pub async fn get_config(State(state): State<SharedState>) -> Json<Value> {
     Json(json!({
         "ok": true,
@@ -126,6 +141,7 @@ pub async fn put_config(
         .map_err(|message| err(StatusCode::INTERNAL_SERVER_ERROR, message))?;
     *state.config.write().await = config.clone();
     state.reload_concurrency().await;
+    let proxy_error = state.reload_http_clients().await.err();
     let restart_required = state.bound_listen != config.listen;
     let adb_error = task::refresh_adb_status(&state).await.err();
     Ok(Json(json!({
@@ -133,6 +149,7 @@ pub async fn put_config(
         "config": config,
         "restart_required": restart_required,
         "adb_error": adb_error,
+        "proxy_error": proxy_error,
     })))
 }
 
@@ -209,6 +226,10 @@ async fn store_config(
         .map_err(|message| err(StatusCode::INTERNAL_SERVER_ERROR, message))?;
     *state.config.write().await = config;
     state.reload_concurrency().await;
+    state
+        .reload_http_clients()
+        .await
+        .map_err(|message| err(StatusCode::BAD_REQUEST, message))?;
     Ok(())
 }
 

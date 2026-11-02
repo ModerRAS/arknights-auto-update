@@ -646,7 +646,7 @@ mod tests {
     async fn resumes_partial_download() {
         let body = {
             let mut data = vec![0x50, 0x4B, 0x03, 0x04];
-            data.extend(std::iter::repeat(9u8).take(4000));
+            data.extend(std::iter::repeat_n(9u8, 4000));
             data
         };
         let total = body.len();

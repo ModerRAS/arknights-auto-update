@@ -123,6 +123,8 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: write
+    env:
+      ARK_UPDATER_GIT_SHA: ${{ github.sha }}
     strategy:
       fail-fast: false
       matrix:

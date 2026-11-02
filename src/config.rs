@@ -64,8 +64,33 @@ pub struct AppConfig {
     pub auto_update_on_check: bool,
     /// 假设：非空时跳过官方入口解析，直接把该 URL 当作 APK 直链（自建镜像或测试）。
     pub apk_url_override: Option<String>,
+    /// 空字符串跟随环境变量，`off` 强制直连。
+    pub proxy: Option<String>,
+    /// 程序自身更新间隔。空字符串或 `off` 表示关闭。
+    #[serde(default = "default_app_update_interval")]
+    pub app_update_interval: String,
+    /// 发现新的程序构建后是否自动替换并重启。
+    #[serde(default = "default_true")]
+    pub auto_apply_app_update: bool,
+    /// 空则使用 GitHub 最新 Release。测试可指向本机的一份相同 JSON。
+    pub app_update_feed: Option<String>,
+    /// 模拟器开机检测间隔。空字符串或 `off` 表示关闭。
+    #[serde(default = "default_watch_interval")]
+    pub emulator_watch_interval: String,
     pub extra_devices: Vec<String>,
     pub emulators: Vec<EmulatorConfig>,
+}
+
+fn default_app_update_interval() -> String {
+    "6h".into()
+}
+
+fn default_watch_interval() -> String {
+    "1m".into()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppConfig {
@@ -82,6 +107,11 @@ impl Default for AppConfig {
             auto_check_interval: "6h".into(),
             auto_update_on_check: true,
             apk_url_override: None,
+            proxy: None,
+            app_update_interval: default_app_update_interval(),
+            auto_apply_app_update: true,
+            app_update_feed: None,
+            emulator_watch_interval: default_watch_interval(),
             extra_devices: Vec::new(),
             emulators: Vec::new(),
         }
@@ -104,6 +134,10 @@ impl AppConfig {
         blank_to_none(&mut self.adb_path);
         blank_to_none(&mut self.apk_cache_dir);
         blank_to_none(&mut self.apk_url_override);
+        blank_to_none(&mut self.app_update_feed);
+        self.proxy = normalize_proxy(self.proxy.take());
+        self.app_update_interval = self.app_update_interval.trim().to_string();
+        self.emulator_watch_interval = self.emulator_watch_interval.trim().to_string();
         if self.concurrency == 0 {
             self.concurrency = 1;
         }
@@ -148,6 +182,16 @@ impl AppConfig {
     pub fn validate(&self) -> Result<(), String> {
         ensure_loopback(&self.listen)?;
         parse_interval(&self.auto_check_interval)?;
+        parse_interval(&self.app_update_interval)?;
+        parse_interval(&self.emulator_watch_interval)?;
+        if let Some(proxy) = &self.proxy {
+            if !proxy.eq_ignore_ascii_case("off") {
+                crate::http_client::validate_proxy_url(proxy)?;
+            }
+        }
+        if let Some(feed) = &self.app_update_feed {
+            crate::http_client::validate_feed_url(feed)?;
+        }
         let mut seen = std::collections::HashSet::new();
         for emulator in &self.emulators {
             if !seen.insert(emulator.id.clone()) {
@@ -203,6 +247,20 @@ pub fn ensure_loopback(listen: &str) -> Result<SocketAddr, String> {
     Ok(addr)
 }
 
+fn normalize_proxy(value: Option<String>) -> Option<String> {
+    let value = value?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else if trimmed.eq_ignore_ascii_case("off") || trimmed.eq_ignore_ascii_case("direct") {
+        Some("off".into())
+    } else if trimmed == value {
+        Some(value)
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// 解析 `6h` / `30m` / `1d` / `90s`。空字符串和 `off` 表示关闭。
 pub fn parse_interval(raw: &str) -> Result<Option<Duration>, String> {
     let text = raw.trim();
@@ -213,18 +271,18 @@ pub fn parse_interval(raw: &str) -> Result<Option<Duration>, String> {
         .find(|ch: char| !ch.is_ascii_digit())
         .unwrap_or(text.len());
     if split_at == 0 {
-        return Err(format!("无法解析自动检查间隔「{raw}」，示例：6h、30m、1d"));
+        return Err(format!("无法解析时间间隔「{raw}」，示例：6h、30m、1d"));
     }
     let number: u64 = text[..split_at]
         .parse()
-        .map_err(|_| format!("无法解析自动检查间隔「{raw}」"))?;
+        .map_err(|_| format!("无法解析时间间隔「{raw}」"))?;
     let unit = text[split_at..].trim();
     let seconds = match unit {
         "s" | "sec" | "secs" => number,
         "m" | "min" | "mins" => number.saturating_mul(60),
         "h" | "hr" | "hour" | "hours" => number.saturating_mul(3600),
         "d" | "day" | "days" => number.saturating_mul(86_400),
-        _ => return Err(format!("无法解析自动检查间隔「{raw}」，单位用 s/m/h/d")),
+        _ => return Err(format!("无法解析时间间隔「{raw}」，单位用 s/m/h/d")),
     };
     if seconds == 0 {
         Ok(None)
@@ -265,6 +323,34 @@ mod tests {
         let config = AppConfig::default();
         assert_eq!(config.auto_check_interval, "6h");
         assert!(config.auto_update_on_check);
+        assert_eq!(config.app_update_interval, "6h");
+        assert!(config.auto_apply_app_update);
+        assert_eq!(config.emulator_watch_interval, "1m");
+        assert!(config.proxy.is_none());
+    }
+
+    #[test]
+    fn old_config_keeps_new_maintenance_defaults() {
+        let loaded: AppConfig = toml::from_str("listen = \"127.0.0.1:8787\"\n").expect("parse");
+        assert_eq!(loaded.app_update_interval, "6h");
+        assert!(loaded.auto_apply_app_update);
+        assert_eq!(loaded.emulator_watch_interval, "1m");
+        assert!(loaded.proxy.is_none());
+        assert!(loaded.app_update_feed.is_none());
+    }
+
+    #[test]
+    fn rejects_bad_proxy_and_feed() {
+        let mut config = AppConfig {
+            proxy: Some("ftp://127.0.0.1:1".into()),
+            ..AppConfig::default()
+        };
+        assert!(config.validate().is_err());
+        config.proxy = Some("off".into());
+        config.app_update_feed = Some("http://example.com/latest".into());
+        assert!(config.validate().is_err());
+        config.app_update_feed = Some("http://127.0.0.1:9/latest".into());
+        assert!(config.validate().is_ok());
     }
 
     #[test]
@@ -294,9 +380,11 @@ mod tests {
 
     #[test]
     fn roundtrip_toml() {
-        let mut config = AppConfig::default();
-        config.auto_check_interval = "6h".into();
-        config.concurrency = 2;
+        let mut config = AppConfig {
+            auto_check_interval: "6h".into(),
+            concurrency: 2,
+            ..AppConfig::default()
+        };
         config.emulators.push(EmulatorConfig {
             id: "mumu-0".into(),
             name: "MuMu 12 实例 0".into(),

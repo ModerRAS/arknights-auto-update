@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -142,6 +143,9 @@ pub async fn watch_config(state: SharedState) {
                     *state.config.write().await = config;
                     *state.config_mtime.lock().await = mtime;
                     state.reload_concurrency().await;
+                    if let Err(err) = state.reload_http_clients().await {
+                        tracing::warn!(error = %err, "热重载后的代理不可用");
+                    }
                     if let Err(err) = refresh_adb_status(&state).await {
                         tracing::warn!(error = %err, "热重载后的 adb 不可用");
                     }
@@ -224,7 +228,7 @@ async fn publish_auto(
     };
 }
 
-fn instant_to_unix_ms(at: Instant) -> u64 {
+pub(crate) fn instant_to_unix_ms(at: Instant) -> u64 {
     let now = Instant::now();
     let now_ms = crate::util::now_ms();
     let delta = if at >= now {
@@ -239,7 +243,10 @@ fn instant_to_unix_ms(at: Instant) -> u64 {
     }
 }
 
-async fn update_busy(state: &AppState) -> bool {
+pub(crate) async fn game_update_busy(state: &AppState) -> bool {
+    if state.game_update_running.load(Ordering::SeqCst) {
+        return true;
+    }
     let devices_busy = state
         .devices
         .read()
@@ -253,6 +260,12 @@ async fn update_busy(state: &AppState) -> bool {
         state.download.read().await.phase,
         DownloadPhase::Resolving | DownloadPhase::Downloading | DownloadPhase::Verifying
     )
+}
+
+pub(crate) async fn update_busy(state: &AppState) -> bool {
+    game_update_busy(state).await
+        || state.app_update.read().await.phase.blocks_game_update()
+        || state.app_job_running.load(Ordering::SeqCst)
 }
 
 async fn run_auto_cycle(state: &SharedState) -> String {
@@ -293,7 +306,7 @@ async fn run_auto_cycle(state: &SharedState) -> String {
                 devices: DeviceSelector::Only(serials),
                 force: false,
             };
-            match start_update(state, request).await {
+            match start_update_if_idle(state, request).await {
                 Ok(()) => {
                     tracing::info!(count, "已开始无人值守更新");
                     format!(
@@ -389,7 +402,8 @@ pub async fn check_official(state: &AppState, force: bool) -> Result<OfficialVer
             }
         }
     }
-    match fetch_official(&state.version_client).await {
+    let client = state.version_client.read().await.clone();
+    match fetch_official(&client).await {
         Ok(version) => {
             *state.version_cache.write().await = Some(CachedVersion {
                 version: version.clone(),
@@ -490,7 +504,9 @@ pub async fn refresh_devices(state: &SharedState) -> Result<(), String> {
         Ok(info) => Some(info),
         Err(err) => {
             let old = state.devices.read().await.clone();
-            *state.devices.write().await = merge_device_rows(&old, Vec::new());
+            let mut rows = Vec::new();
+            attach_configured_rows(&config, &mut rows);
+            *state.devices.write().await = merge_device_rows(&old, rows);
             return Err(err);
         }
     };
@@ -740,22 +756,77 @@ async fn resolve_targets(state: &AppState, request: &UpdateRequest) -> Result<Ve
 }
 
 pub async fn start_update(state: &SharedState, request: UpdateRequest) -> Result<(), String> {
-    let official = check_official(state, false).await?;
-    let targets = resolve_targets(state, &request).await?;
-    let token = CancellationToken::new();
-    if let Some(previous) = state.update_cancel.lock().await.replace(token.clone()) {
-        previous.cancel();
+    let _gate = state.update_gate.lock().await;
+    start_update_inner(state, request, true).await
+}
+
+pub async fn start_update_if_idle(
+    state: &SharedState,
+    request: UpdateRequest,
+) -> Result<(), String> {
+    let _gate = state.update_gate.lock().await;
+    if update_busy(state).await {
+        return Err("已有更新在进行".into());
     }
-    let force = request.force;
-    let state = Arc::clone(state);
-    tokio::spawn(async move {
-        run_batch(state, targets, official, force, token).await;
-    });
-    Ok(())
+    start_update_inner(state, request, false).await
+}
+
+async fn start_update_inner(
+    state: &SharedState,
+    request: UpdateRequest,
+    cancel_existing: bool,
+) -> Result<(), String> {
+    let generation = state.game_update_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    state.game_update_running.store(true, Ordering::SeqCst);
+    let started = async {
+        let official = check_official(state, false).await?;
+        let targets = resolve_targets(state, &request).await?;
+        let token = CancellationToken::new();
+        if cancel_existing {
+            if let Some(previous) = state.update_cancel.lock().await.replace(token.clone()) {
+                previous.cancel();
+            }
+        } else {
+            *state.update_cancel.lock().await = Some(token.clone());
+        }
+        let force = request.force;
+        let task_state = Arc::clone(state);
+        tokio::spawn(async move {
+            let _guard = GameUpdateGuard {
+                state: Arc::clone(&task_state),
+                generation,
+            };
+            run_batch(task_state, targets, official, force, token).await;
+        });
+        Ok(())
+    }
+    .await;
+    if started.is_err() && state.game_update_gen.load(Ordering::SeqCst) == generation {
+        state.game_update_running.store(false, Ordering::SeqCst);
+    }
+    started
+}
+
+struct GameUpdateGuard {
+    state: SharedState,
+    generation: u64,
+}
+
+impl Drop for GameUpdateGuard {
+    fn drop(&mut self) {
+        if self.state.game_update_gen.load(Ordering::SeqCst) == self.generation {
+            self.state
+                .game_update_running
+                .store(false, Ordering::SeqCst);
+        }
+    }
 }
 
 pub async fn cancel_all(state: &AppState) {
     if let Some(token) = state.update_cancel.lock().await.take() {
+        token.cancel();
+    }
+    if let Some(token) = state.app_cancel.lock().await.take() {
         token.cancel();
     }
     {
@@ -1155,17 +1226,18 @@ async fn download_leader(
             ..DownloadSnapshot::default()
         })
         .await;
+    let client = state.download_client.read().await.clone();
     let url = if let Some(url) = nonempty(override_url.as_deref()) {
         url
     } else {
-        resolve_apk_url(&state.download_client).await?
+        resolve_apk_url(&client).await?
     };
     let config = state.config.read().await.clone();
     let cache = state.cache_dir(&config);
     let progress_state = Arc::clone(&state);
     let progress_version = version.client_version.clone();
     obtain_apk(
-        &state.download_client,
+        &client,
         &url,
         &cache,
         &version.client_version,
@@ -1274,8 +1346,10 @@ mod tests {
 
     #[test]
     fn offline_manual_device_stays_visible() {
-        let mut config = AppConfig::default();
-        config.extra_devices.push("127.0.0.1:5599".into());
+        let config = AppConfig {
+            extra_devices: vec!["127.0.0.1:5599".into()],
+            ..AppConfig::default()
+        };
         let mut rows = Vec::new();
         attach_configured_rows(&config, &mut rows);
         assert_eq!(rows.len(), 1);
@@ -1328,16 +1402,37 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[tokio::test]
+    async fn missing_adb_keeps_configured_emulator_visible() {
+        let dir = tempfile::tempdir().expect("temp");
+        let config = AppConfig {
+            adb_path: Some(dir.path().join("missing-adb").display().to_string()),
+            emulators: vec![emulator("127.0.0.1:16384")],
+            ..AppConfig::default()
+        };
+        let state = test_state(config, dir.path()).await;
+        let err = refresh_devices(&state).await.expect_err("adb missing");
+        assert!(err.contains("不存在") || err.contains("adb"), "{err}");
+        let devices = state.devices.read().await.clone();
+        assert_eq!(devices.len(), 1);
+        assert!(!devices[0].online);
+        assert_eq!(devices[0].serial, "127.0.0.1:16384");
+        assert_eq!(devices[0].emulator_name.as_deref(), Some("127.0.0.1:16384"));
+    }
+
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn x86_update_does_not_download() {
         let dir = tempfile::tempdir().expect("temp");
         let adb = dir.path().join("fake-adb");
         write_fake_adb(&adb, "x86", &dir.path().join("install.log"));
         let cache = dir.path().join("cache");
-        let mut config = AppConfig::default();
-        config.adb_path = Some(adb.display().to_string());
-        config.apk_cache_dir = Some(cache.display().to_string());
-        config.apk_url_override = Some("http://127.0.0.1:9/should-not-download.apk".into());
+        let config = AppConfig {
+            adb_path: Some(adb.display().to_string()),
+            apk_cache_dir: Some(cache.display().to_string()),
+            apk_url_override: Some("http://127.0.0.1:9/should-not-download.apk".into()),
+            ..AppConfig::default()
+        };
         let state = test_state(config, dir.path()).await;
         seed_version(&state).await;
         refresh_devices(&state).await.expect("refresh");
@@ -1375,7 +1470,7 @@ mod tests {
         let cache = dir.path().join("cache");
         let body = {
             let mut data = vec![0x50, 0x4B, 0x03, 0x04];
-            data.extend(std::iter::repeat(4u8).take(3000));
+            data.extend(std::iter::repeat_n(4u8, 3000));
             data
         };
         let hits = Arc::new(AtomicUsize::new(0));
@@ -1395,11 +1490,13 @@ mod tests {
             axum::serve(listener, app).await.expect("serve");
         });
 
-        let mut config = AppConfig::default();
-        config.adb_path = Some(adb.display().to_string());
-        config.apk_cache_dir = Some(cache.display().to_string());
-        config.apk_url_override = Some(format!("http://{addr}/arknights-hg-2791.apk"));
-        config.concurrency = 2;
+        let config = AppConfig {
+            adb_path: Some(adb.display().to_string()),
+            apk_cache_dir: Some(cache.display().to_string()),
+            apk_url_override: Some(format!("http://{addr}/arknights-hg-2791.apk")),
+            concurrency: 2,
+            ..AppConfig::default()
+        };
         let state = test_state(config, dir.path()).await;
         seed_version(&state).await;
         refresh_devices(&state).await.expect("refresh");

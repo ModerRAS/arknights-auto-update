@@ -32,6 +32,17 @@ fn version_flag_prints_package_version() {
 }
 
 #[test]
+fn incomplete_replace_does_not_start_the_server() {
+    let output = run(&["--replace-from", "missing-new-binary"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("utf-8 stderr");
+    assert!(
+        stderr.contains("替换") || stderr.contains("参数"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn help_exits_without_starting_the_server() {
     for args in [["--help"], ["-h"]] {
         let output = run(&args);

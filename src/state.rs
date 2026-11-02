@@ -1,11 +1,13 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use dashmap::DashMap;
 use serde::Serialize;
 use tokio::sync::{broadcast, Mutex, RwLock, Semaphore};
+use tokio_util::sync::CancellationToken;
 
 use crate::config::AppConfig;
 use crate::download::ApkArtifact;
@@ -264,6 +266,80 @@ impl Default for AutoStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppUpdatePhase {
+    Idle,
+    Checking,
+    Downloading,
+    Verifying,
+    Applying,
+    UpToDate,
+    Failed,
+}
+
+impl AppUpdatePhase {
+    pub fn blocks_game_update(self) -> bool {
+        matches!(self, Self::Downloading | Self::Verifying | Self::Applying)
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AppUpdateStatus {
+    pub current_version: String,
+    pub current_commit: Option<String>,
+    pub latest_version: Option<String>,
+    pub latest_commit: Option<String>,
+    pub phase: AppUpdatePhase,
+    pub percent: f64,
+    pub bytes: u64,
+    pub total: Option<u64>,
+    pub message: String,
+    pub error: Option<String>,
+    pub update_available: bool,
+    pub next_run_ms: Option<u64>,
+}
+
+impl AppUpdateStatus {
+    fn starting() -> Self {
+        Self {
+            current_version: crate::self_update::current_version().to_string(),
+            current_commit: crate::self_update::current_commit().map(str::to_string),
+            latest_version: None,
+            latest_commit: None,
+            phase: AppUpdatePhase::Idle,
+            percent: 0.0,
+            bytes: 0,
+            total: None,
+            message: "还没检查过程序更新".into(),
+            error: None,
+            update_available: false,
+            next_run_ms: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WatchStatus {
+    pub enabled: bool,
+    pub interval: String,
+    pub next_run_ms: Option<u64>,
+    pub message: String,
+    pub offline_emulators: Vec<String>,
+}
+
+impl WatchStatus {
+    fn starting() -> Self {
+        Self {
+            enabled: false,
+            interval: String::new(),
+            next_run_ms: None,
+            message: "正在安排模拟器开机检测".into(),
+            offline_emulators: Vec::new(),
+        }
+    }
+}
+
 pub struct AppState {
     pub paths: AppPaths,
     pub bound_listen: String,
@@ -276,15 +352,23 @@ pub struct AppState {
     pub adb: RwLock<AdbStatus>,
     pub events: broadcast::Sender<BusEvent>,
     pub recent_logs: Arc<std::sync::Mutex<VecDeque<LogLine>>>,
-    pub version_client: reqwest::Client,
-    pub download_client: reqwest::Client,
+    pub version_client: RwLock<reqwest::Client>,
+    pub download_client: RwLock<reqwest::Client>,
     pub flight: SingleFlight<ApkArtifact>,
     pub device_locks: DashMap<String, Arc<Mutex<()>>>,
-    pub update_cancel: Mutex<Option<tokio_util::sync::CancellationToken>>,
+    pub update_cancel: Mutex<Option<CancellationToken>>,
+    pub update_gate: Mutex<()>,
+    pub game_update_gen: AtomicU64,
+    pub game_update_running: AtomicBool,
+    pub app_job_running: AtomicBool,
+    pub app_cancel: Mutex<Option<CancellationToken>>,
     pub concurrency: RwLock<Arc<Semaphore>>,
     pub save_lock: Mutex<()>,
     pub known_versions: Mutex<HashMap<String, String>>,
     pub auto: RwLock<AutoStatus>,
+    pub app_update: RwLock<AppUpdateStatus>,
+    pub watch: RwLock<WatchStatus>,
+    pub proxy: RwLock<crate::http_client::ProxyStatus>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -301,6 +385,7 @@ impl AppState {
     ) -> Arc<Self> {
         let permits = config.concurrency.clamp(1, 16);
         let known_path = paths.data_dir.join("known-versions.json");
+        let proxy = initial_proxy(&config);
         Arc::new(Self {
             paths,
             bound_listen,
@@ -314,15 +399,32 @@ impl AppState {
             adb: RwLock::new(AdbStatus::default()),
             events,
             recent_logs,
-            version_client,
-            download_client,
+            version_client: RwLock::new(version_client),
+            download_client: RwLock::new(download_client),
             flight: SingleFlight::new(),
             device_locks: DashMap::new(),
             update_cancel: Mutex::new(None),
+            update_gate: Mutex::new(()),
+            game_update_gen: AtomicU64::new(0),
+            game_update_running: AtomicBool::new(false),
+            app_job_running: AtomicBool::new(false),
+            app_cancel: Mutex::new(None),
             save_lock: Mutex::new(()),
             known_versions: Mutex::new(load_known_versions(&known_path)),
             auto: RwLock::new(AutoStatus::default()),
+            app_update: RwLock::new(AppUpdateStatus::starting()),
+            watch: RwLock::new(WatchStatus::starting()),
+            proxy: RwLock::new(proxy),
         })
+    }
+
+    pub async fn reload_http_clients(&self) -> Result<(), String> {
+        let proxy = self.config.read().await.proxy.clone();
+        let built = crate::http_client::build_clients(proxy.as_deref())?;
+        *self.version_client.write().await = built.version;
+        *self.download_client.write().await = built.download;
+        *self.proxy.write().await = built.proxy.status;
+        Ok(())
     }
 
     pub async fn note_installed(&self, serial: &str, version: &str) {
@@ -417,6 +519,16 @@ pub fn merge_device_rows(
         }
     }
     scanned
+}
+
+fn initial_proxy(config: &AppConfig) -> crate::http_client::ProxyStatus {
+    match crate::http_client::resolve_from_environment(config.proxy.as_deref()) {
+        Ok(resolved) => resolved.status,
+        Err(err) => crate::http_client::ProxyStatus {
+            source: "direct".into(),
+            display: err,
+        },
+    }
 }
 
 fn load_known_versions(path: &Path) -> HashMap<String, String> {

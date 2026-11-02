@@ -4,6 +4,7 @@ const state = {
   emulators: [],
   settingsDirty: false,
   download: null,
+  appPhase: "idle",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -83,6 +84,25 @@ async function refreshOverview() {
   const next = auto.next_run_ms ? `下次 ${formatTime(auto.next_run_ms)}` : "";
   const parts = [auto.message, next].filter(Boolean);
   $("auto-status").textContent = parts.join(" · ") || "自动更新状态未知";
+
+  const app = data.app_update || {};
+  state.appPhase = app.phase || "idle";
+  $("app-version").textContent = app.current_version || "未知";
+  const commit = app.current_commit ? String(app.current_commit).slice(0, 7) : "开发构建";
+  const latest = app.latest_version ? ` · 远端 ${app.latest_version}` : "";
+  $("app-commit").textContent = `${commit}${latest}`;
+  $("app-bar").style.width = `${Number(app.percent || 0)}%`;
+  const appNext = app.next_run_ms ? `下次 ${formatTime(app.next_run_ms)}` : "";
+  $("app-update-detail").textContent = [app.message, appNext].filter(Boolean).join(" · ") || "还没检查";
+  const appError = $("app-update-error");
+  appError.hidden = !app.error;
+  appError.textContent = app.error || "";
+  const proxy = data.proxy || {};
+  $("proxy-status").textContent = proxy.display ? `网络 ${proxy.display}` : "网络 —";
+
+  const watch = data.watch || {};
+  const watchNext = watch.next_run_ms ? `下次 ${formatTime(watch.next_run_ms)}` : "";
+  $("watch-status").textContent = [watch.message, watchNext].filter(Boolean).join(" · ") || "开机检测状态未知";
 }
 
 function statusPill(device) {
@@ -317,12 +337,17 @@ function fillSettings(config) {
   form.device_wait_timeout_secs.value = config.device_wait_timeout_secs ?? 180;
   form.install_timeout_secs.value = config.install_timeout_secs ?? 1800;
   form.auto_check_interval.value = config.auto_check_interval || "";
+  form.app_update_interval.value = config.app_update_interval || "";
+  form.emulator_watch_interval.value = config.emulator_watch_interval || "";
+  form.proxy.value = config.proxy || "";
+  form.app_update_feed.value = config.app_update_feed || "";
   form.adb_path.value = config.adb_path || "";
   form.apk_cache_dir.value = config.apk_cache_dir || "";
   form.apk_url_override.value = config.apk_url_override || "";
   form.extra_devices.value = (config.extra_devices || []).join("\n");
   form.auto_launch_game.checked = Boolean(config.auto_launch_game);
   form.auto_update_on_check.checked = Boolean(config.auto_update_on_check);
+  form.auto_apply_app_update.checked = Boolean(config.auto_apply_app_update);
   state.emulators = (config.emulators || []).map((item) => ({ ...item, start_args: item.start_args || [] }));
   renderEmulators();
   $("settings-note").textContent = `配置文件：${config.pathHint || ""}`;
@@ -351,11 +376,16 @@ function readSettings() {
     device_wait_timeout_secs: Number(form.device_wait_timeout_secs.value || 180),
     install_timeout_secs: Number(form.install_timeout_secs.value || 1800),
     auto_check_interval: form.auto_check_interval.value.trim(),
+    app_update_interval: form.app_update_interval.value.trim(),
+    emulator_watch_interval: form.emulator_watch_interval.value.trim(),
     auto_launch_game: form.auto_launch_game.checked,
     auto_update_on_check: form.auto_update_on_check.checked,
+    auto_apply_app_update: form.auto_apply_app_update.checked,
     adb_path: blank(form.adb_path.value),
     apk_cache_dir: blank(form.apk_cache_dir.value),
     apk_url_override: blank(form.apk_url_override.value),
+    proxy: blank(form.proxy.value),
+    app_update_feed: blank(form.app_update_feed.value),
     extra_devices: form.extra_devices.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
     emulators: state.emulators.map((item) => ({
       ...item,
@@ -420,6 +450,24 @@ document.querySelectorAll(".tab").forEach((button) => {
   });
 });
 
+$("btn-app-check").addEventListener("click", () => {
+  request("/api/app-update/check", { method: "POST" })
+    .then(() => refreshOverview())
+    .catch((error) => {
+      $("app-update-error").hidden = false;
+      $("app-update-error").textContent = error.message;
+    });
+});
+$("btn-app-apply").addEventListener("click", () => {
+  const ok = window.confirm("如果有新版本，会下载并重启程序。正在进行的官服安装会等这次替换结束后再继续。继续？");
+  if (!ok) return;
+  request("/api/app-update/apply", { method: "POST" })
+    .then(() => refreshOverview())
+    .catch((error) => {
+      $("app-update-error").hidden = false;
+      $("app-update-error").textContent = error.message;
+    });
+});
 $("btn-check").addEventListener("click", () => {
   request("/api/check", { method: "POST" }).then(refreshOverview).catch((error) => {
     $("version-error").hidden = false;
@@ -474,6 +522,8 @@ $("settings-form").addEventListener("submit", (event) => {
       toast(`已保存，但 adb 不可用：${data.adb_error}`);
     } else if (data.restart_required) {
       toast("已保存。监听地址变更需要重启程序。");
+    } else if (data.proxy_error) {
+      toast(`已保存，但代理没有生效：${data.proxy_error}`);
     } else {
       toast("已保存，并已热加载。");
     }
@@ -530,6 +580,10 @@ request("/api/logs").then((data) => {
   renderLogs();
 }).catch(() => {});
 refreshOverview().catch((error) => {
+  if (state.appPhase === "downloading" || state.appPhase === "verifying" || state.appPhase === "applying") {
+    $("app-update-detail").textContent = "与程序的连接中断了。如果正在替换程序，等几秒后刷新页面。";
+    return;
+  }
   $("version-error").hidden = false;
   $("version-error").textContent = error.message;
 });
