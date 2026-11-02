@@ -57,7 +57,7 @@ flowchart TD
 | `aarch64-apple-darwin` | `macos-latest` | `.tar.gz` |
 | `x86_64-apple-darwin` | `macos-latest` | `.tar.gz` |
 
-压缩包带前导目录，包含可执行文件、`LICENSE` 和 `README.md`。每个压缩包另有 SHA256 校验文件。Release 说明由 GitHub 根据提交自动生成，并标为最新版本。
+压缩包带前导目录，包含可执行文件、`LICENSE` 和 `README.md`。每个压缩包另有 SHA256 校验文件。Release 说明由 GitHub 根据提交自动生成，并标为最新版本。构建时把当前提交写进 `ARK_UPDATER_GIT_SHA`，程序自身更新用它和 Release 的提交号对照。
 
 ## 权限
 

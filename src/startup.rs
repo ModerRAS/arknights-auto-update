@@ -1,18 +1,18 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
 use tokio::sync::broadcast;
 
 use crate::config::{ensure_loopback, parse_interval, resolve_config_path, save, AppConfig};
+use crate::http_client;
 use crate::logsetup;
+use crate::maintenance;
 use crate::platform::{default_data_dir, open_browser};
+use crate::self_update::{self, current_version};
 use crate::state::{AppPaths, AppState, LogLine, LOG_CAPACITY};
 use crate::task;
-
-const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 ark-updater";
 
 #[derive(Debug, Parser)]
 #[command(name = "ark-updater", version, about = "明日方舟官服自动更新器")]
@@ -26,10 +26,41 @@ struct Cli {
     /// 启动后用系统浏览器打开 WebUI。
     #[arg(long)]
     open: bool,
+    /// 替换进程使用：新程序文件。
+    #[arg(long, hide = true)]
+    replace_from: Option<PathBuf>,
+    /// 替换进程使用：当前程序路径。
+    #[arg(long, hide = true)]
+    replace_to: Option<PathBuf>,
+    /// 替换进程使用：等原进程退出后再替换。
+    #[arg(long, hide = true)]
+    wait_for_parent: bool,
+    /// 替换完成后重新启动时附带的原始参数。
+    #[arg(long, hide = true, allow_hyphen_values = true)]
+    restart_arg: Vec<String>,
+    /// 这次启动来自程序自己的替换。
+    #[arg(long, hide = true)]
+    from_self_update: bool,
 }
 
 pub async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if cli.wait_for_parent || cli.replace_from.is_some() || cli.replace_to.is_some() {
+        let from = cli
+            .replace_from
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("替换参数不完整"))?;
+        let to = cli
+            .replace_to
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("替换参数不完整"))?;
+        self_update::apply_replacement(from, to, cli.wait_for_parent, &cli.restart_arg)
+            .map_err(|err| anyhow::anyhow!(err))?;
+        return Ok(());
+    }
+    if cli.from_self_update {
+        self_update::ignore_terminal_hangup();
+    }
     let data_dir = default_data_dir();
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("创建数据目录 {} 失败", data_dir.display()))?;
@@ -55,8 +86,8 @@ pub async fn run() -> anyhow::Result<()> {
     let log_dir = data_dir.join("logs");
     logsetup::init(&log_dir, events.clone(), recent.clone())?;
 
-    let version_client = version_client().map_err(|err| anyhow::anyhow!(err))?;
-    let download_client = download_client().map_err(|err| anyhow::anyhow!(err))?;
+    let clients =
+        http_client::build_clients(config.proxy.as_deref()).map_err(|err| anyhow::anyhow!(err))?;
     let paths = AppPaths {
         config_path: config_path.clone(),
         data_dir,
@@ -70,8 +101,8 @@ pub async fn run() -> anyhow::Result<()> {
         bound.to_string(),
         events,
         recent,
-        version_client,
-        download_client,
+        clients.version,
+        clients.download,
     );
     task::note_config_mtime(&state).await;
 
@@ -101,6 +132,14 @@ pub async fn run() -> anyhow::Result<()> {
                 "无人值守未开启。要自动更新，把 auto_check_interval 设为 6h，并把 auto_update_on_check 设为 true。"
             );
         }
+    }
+    println!(
+        "程序版本 {}，网络：{}",
+        current_version(),
+        clients.proxy.status.display
+    );
+    if cli.from_self_update {
+        println!("程序已更新并重新启动。");
     }
 
     if cli.open {
@@ -135,6 +174,18 @@ pub async fn run() -> anyhow::Result<()> {
             task::auto_check_loop(state).await;
         });
     }
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            maintenance::app_update_loop(state).await;
+        });
+    }
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            maintenance::emulator_watch_loop(state).await;
+        });
+    }
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
@@ -148,31 +199,13 @@ pub async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn version_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .connect_timeout(Duration::from_secs(30))
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|err| format!("创建版本查询客户端失败：{err}"))
-}
-
-fn download_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(60))
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|err| format!("创建下载客户端失败：{err}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn user_agent_is_present() {
-        assert!(USER_AGENT.contains("Chrome"));
+        assert!(http_client::USER_AGENT.contains("Chrome"));
+        assert!(http_client::USER_AGENT.contains("ark-updater"));
     }
 }

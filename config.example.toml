@@ -36,6 +36,27 @@ auto_update_on_check = true
 # 可选。非空时跳过官方入口解析，直接下载这个 APK 直链（自建镜像或测试）。
 apk_url_override = ""
 
+# 下载代理。留空则使用 ALL_PROXY / HTTPS_PROXY / HTTP_PROXY 里的第一个；
+# off 强制直连。支持 http、https、socks5、socks5h。
+# 官方版本、APK 和程序自身更新都走它。127.0.0.1 不走代理。
+# proxy = "http://127.0.0.1:7890"
+proxy = ""
+
+# 程序自己的更新。启动后约 3 秒查一次 GitHub Release，之后按这个间隔重复。
+# 同一个版本号如果指向了新提交，发布构建也会更新。开发构建只在版本号变高时更新。
+# 空字符串或 off 关闭。短于 5 分钟时按 5 分钟执行。
+app_update_interval = "6h"
+
+# 发现新的程序构建后自动下载、替换并重启。Cargo 的 target 目录里不会自动替换。
+auto_apply_app_update = true
+
+# 可选。留空则使用 GitHub 上 ModerRAS/arknights-auto-update 的最新 Release。
+app_update_feed = ""
+
+# 模拟器没开机时，按这个间隔看它有没有被打开。打开后如果官服落后就安装。
+# 这个检查不会自己拉起模拟器。空字符串或 off 关闭。短于 15 秒时按 15 秒执行。
+emulator_watch_interval = "1m"
+
 # 手动添加的设备，host:port 或 adb 序列号。
 extra_devices = []
 

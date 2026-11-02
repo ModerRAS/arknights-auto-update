@@ -41,6 +41,19 @@
         <p class="sub" id="apk-detail">尚未下载</p>
       </article>
       <article class="card">
+        <h2>程序</h2>
+        <p class="metric" id="app-version">—</p>
+        <p class="sub" id="app-commit">—</p>
+        <div class="track" aria-hidden="true"><div class="bar" id="app-bar"></div></div>
+        <p class="sub" id="app-update-detail">还没检查</p>
+        <p class="sub" id="proxy-status">网络 —</p>
+        <p class="warn" id="app-update-error" hidden></p>
+        <div class="toolbar">
+          <button type="button" id="btn-app-check">检查</button>
+          <button type="button" class="primary" id="btn-app-apply">更新并重启</button>
+        </div>
+      </article>
+      <article class="card">
         <h2>adb</h2>
         <p class="metric" id="adb-source">未检测</p>
         <p class="sub" id="adb-path">—</p>
@@ -62,7 +75,8 @@
         </form>
       </div>
       <p class="hint" id="auto-status">正在安排自动更新…</p>
-      <p class="hint">按钮只用于马上再跑一次或取消。配好模拟器后，程序自己检查、拉起并安装。APK 只下载一次。</p>
+      <p class="hint" id="watch-status">正在安排模拟器开机检测…</p>
+      <p class="hint">按钮只用于马上再跑一次或取消。配好模拟器后，程序自己检查官服；模拟器没开机时会定时看它开了没有，开了就安装。每 6 小时仍可能拉起还落后的模拟器。APK 只下载一次。</p>
       <div class="table-wrap">
         <table>
           <thead>
@@ -104,6 +118,12 @@
           <label>自动检查间隔
             <input name="auto_check_interval" placeholder="6h，留空或 off 则关闭" autocomplete="off">
           </label>
+          <label>程序更新间隔
+            <input name="app_update_interval" placeholder="6h，留空或 off 则关闭" autocomplete="off">
+          </label>
+          <label>模拟器开机检测
+            <input name="emulator_watch_interval" placeholder="1m，留空或 off 则关闭" autocomplete="off">
+          </label>
           <label class="wide">adb 路径
             <span class="row">
               <input name="adb_path" placeholder="留空则自动发现" autocomplete="off" spellcheck="false">
@@ -116,11 +136,18 @@
           <label class="wide">APK 直链覆盖
             <input name="apk_url_override" placeholder="留空则走官方入口" autocomplete="off" spellcheck="false">
           </label>
+          <label class="wide">下载代理
+            <input name="proxy" placeholder="留空跟随环境变量，off 强制直连，或 http://127.0.0.1:7890" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="wide">程序更新源
+            <input name="app_update_feed" placeholder="留空则使用 GitHub 最新 Release" autocomplete="off" spellcheck="false">
+          </label>
           <label class="wide">手动设备，每行一个
             <textarea name="extra_devices" rows="3" spellcheck="false"></textarea>
           </label>
           <label class="check"><input name="auto_launch_game" type="checkbox"> 安装完成后启动游戏</label>
           <label class="check"><input name="auto_update_on_check" type="checkbox"> 发现新的 clientVersion 后自动拉起模拟器并安装</label>
+          <label class="check"><input name="auto_apply_app_update" type="checkbox"> 发现新的程序版本后自动下载并重启</label>
         </div>
         <p class="sub" id="settings-note"></p>
         <div class="toolbar">

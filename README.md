@@ -1,6 +1,8 @@
 # 明日方舟官服自动更新器
 
-一个 Rust 单二进制程序。它在本机后台自己完成官服更新：启动后约 8 秒检查官方 `clientVersion`，需要换包就下载一次 APK，并拉起已配置的模拟器安装；之后默认每 6 小时再看一次。页面用来看进度和改配置，更新本身不用点按钮。
+一个 Rust 单二进制程序。它在本机后台自己完成官服更新：启动后约 8 秒检查官方 `clientVersion`，需要换包就下载一次 APK，并拉起已配置的模拟器安装；之后默认每 6 小时再看一次。模拟器没开时，默认每分钟再看一眼；你自己把它打开后，如果官服还落后，就马上安装，这一步不会去拉起模拟器。页面用来看进度和改配置，更新本身不用点按钮。
+
+程序自己也会更新。启动后约 3 秒查看 GitHub Release，默认每 6 小时再看一次。发布构建会对照提交号，所以同一个版本标签指向新提交时也会换程序。需要代理时，在配置里写 `proxy`，官方版本、APK 和程序包都走它。
 
 设备不在线时，用「程序 + 参数数组」拉起 MuMu 12、雷电，或任意自定义模拟器，等 adb 上线后再安装。数据目录里的 `known-versions.json` 记下每台设备上次读到的版本。官方版本没变、而且上次已经装到这个版本时，不会把模拟器再拉起来。
 
@@ -58,6 +60,11 @@ WebUI 保存后立即热加载。监听地址的变更要重启进程才生效�
 | `auto_launch_game` | `false` | 安装成功后启动官服。启动失败只记警告。默认不替你把游戏打开 |
 | `auto_check_interval` | `6h` | `30m` / `6h` / `1d`，或 `off`。开启时，启动后约 8 秒就跑第一轮，而不是先空等一个间隔 |
 | `auto_update_on_check` | `true` | 发现更高的 `clientVersion`，或还不知道设备版本时，自动拉起并安装 |
+| `proxy` | 空 | 空则使用 `ALL_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` 中的第一个。`off` 强制直连。支持 `http`、`https`、`socks5`、`socks5h`。回环地址不走代理 |
+| `app_update_interval` | `6h` | 程序自身更新间隔，`off` 关闭。短于 5 分钟时按 5 分钟 |
+| `auto_apply_app_update` | `true` | 发现新的程序构建后自动替换并重启。`target/debug` 和 `target/release` 里只提示 |
+| `app_update_feed` | 空 | 空则查询 `ModerRAS/arknights-auto-update` 的最新 Release |
+| `emulator_watch_interval` | `1m` | 看模拟器开了没有。`off` 关闭。短于 15 秒时按 15 秒。不拉起模拟器 |
 | `apk_url_override` | 空 | 非空时跳过官方三层跳转，直接下载该 URL |
 | `extra_devices` | `[]` | 手动 `host:port` 或 adb 序列号 |
 | `emulators` | `[]` | 见下方 |
@@ -89,13 +96,30 @@ adb 自动发现顺序：配置里的 `adb_path` → 环境变量 `ADB` → `PAT
 
 失败种类：`NoMatchingAbi`、`SignatureConflict`、`InsufficientStorage`、`DownloadFailed`、`InstallFailed`、`DeviceOffline`，以及 `AdbError`、`Cancelled`。
 
+## 程序自身更新
+
+查询 `https://api.github.com/repos/ModerRAS/arknights-auto-update/releases/latest`。只接受 `vMAJOR.MINOR.PATCH`。压缩包名称是 `ark-updater-<标签>-<目标>.tar.gz` 或 `.zip`，旁边有同名 `.sha256`。Linux 用 musl 包，Windows 用 msvc 包。
+
+远端版本更高就更新。版本相同且两边的提交号不同，也更新；这是为了跟上「同一个版本标签会改指向」的发布方式。没有提交号的本地构建，只在远端版本号更高时更新。远端更旧时不降级。
+
+下载后核对 SHA256，只解出 `ark-updater` 或 `ark-updater.exe`，拒绝带 `..` 的路径。新文件先放到程序旁边的 `.new`，再由当前进程拉起一个替换进程：等原进程退出、改名、用原来的参数重启。校验失败不会覆盖正在运行的文件。`cargo` 的 `target` 目录里不会自动替换，页面上的「更新并重启」仍然可以。
+
+官服安装进行时，程序更新会等到它结束再下载和重启。
+
+## 模拟器开机检测
+
+`emulator_watch_interval` 默认 `1m`。每一轮只扫描 adb，不执行模拟器的启动命令。在线设备的官服版本落后，或还不知道版本时，自动安装；同一台设备 10 分钟内不重复开始。设备关掉再打开后，可以马上再试。自动安装关掉时，开机检测只报告状态。
+
+每 6 小时的无人值守仍然会拉起版本落后的离线模拟器。开机检测负责的是「已经开着或刚打开」的设备，不用等到下一轮 6 小时。
+
 ## 页面
 
-- 概览：官方 `clientVersion` / `resVersion`、检查时间、APK 缓存、当前 adb 路径和版本
+- 概览：官方 `clientVersion` / `resVersion`、检查时间、APK 缓存、程序版本和更新进度、当前代理、adb 路径和版本
+- 开机检测：设备页上单独一行，列出还没开机的模拟器
 - 设备表：序列号、型号、Android、ABI、已装版本（未安装会写「未安装」）、状态、独立进度
 - 全局：检查更新、扫描设备、全部更新、取消全部。全部更新会处理在线设备，并拉起已配置但还没上线的模拟器，点击前有确认
 - 日志：`/api/events` 的 SSE，可按关键字过滤。下载进度推送至少间隔 3 秒
-- 设置：adb、缓存目录、并发、自动检查、模拟器增删改。adb「检测」在路径无效时清空覆盖项并回退到自动发现
+- 设置：adb、缓存目录、并发、自动检查、程序更新、开机检测、代理、模拟器增删改。adb「检测」在路径无效时清空覆盖项并回退到自动发现
 
 HTTP 接口：
 
@@ -108,6 +132,8 @@ POST /api/devices/refresh
 POST /api/check
 POST /api/update               { "devices": [serial] | "all", "force": false }
 POST /api/update/cancel
+POST /api/app-update/check
+POST /api/app-update/apply
 GET  /api/config
 PUT  /api/config
 GET  /api/emulators
