@@ -1,0 +1,31 @@
+name: Rust CI
+description: Format, lint, test, and check the release decision script
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: rust-ci
+
+    - name: Check formatting
+      shell: bash
+      run: cargo fmt --check
+
+    - name: Run clippy
+      shell: bash
+      run: cargo clippy -- -D warnings
+
+    - name: Run tests
+      shell: bash
+      run: cargo test
+
+    - name: Test release decisions
+      shell: bash
+      run: bash scripts/resolve-release-test.sh

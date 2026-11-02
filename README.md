@@ -149,3 +149,19 @@ GET  /api/events
 - 无人值守依赖进程在跑。登录后不自动启动程序的话，更新也不会发生。
 - 离线模拟器是否拉起，看 `known-versions.json` 里上次读到的版本。删掉该文件会让下一轮重新拉起并核对。
 - 许可证是仓库既有的 GPL-3.0-only。
+
+## 自动发布
+
+版本号以 `Cargo.toml` 的 `version` 为准，标签是 `v<version>`。推送到 `master` 或打开 Pull Request 时，CI 会在 Ubuntu 和 Windows 上做 `cargo fmt --check`、`cargo clippy -- -D warnings` 和 `cargo test`。Ubuntu 还会跑发布决策脚本。
+
+还没有 `vX.Y.Z` 标签时，推送 `master` 不会发布。第一次在 Actions 里对 `master` 运行 **Release**，或推送与版本一致的标签，例如 `v0.1.0`。之后把 `version` 提高到比最新稳定标签更大，运行 `cargo check` 更新 `Cargo.lock`，再合并到 `master`，流水线会创建 GitHub Release 并上传这些压缩包和 SHA256：
+
+| 目标 | 平台 |
+| --- | --- |
+| `x86_64-unknown-linux-musl` | Linux x86_64，静态链接 |
+| `aarch64-unknown-linux-musl` | Linux arm64，静态链接 |
+| `x86_64-pc-windows-msvc` | Windows x86_64 |
+| `aarch64-apple-darwin` | macOS Apple 芯片 |
+| `x86_64-apple-darwin` | macOS Intel |
+
+压缩包内是 `ark-updater`、`LICENSE`、`README.md` 和 `config.example.toml`。同一次提交上重新运行会更新已有 Release 的产物。标签若已指向别的提交，流水线失败且不移动该标签。发布使用 Actions 自带的 `GITHUB_TOKEN`。
